@@ -1,9 +1,12 @@
-import type { DetectBoardResponse, ProcessResponse } from "./types";
+import type {
+  DebugDetectResponse,
+  DetectBoardResponse,
+  ProcessResponse,
+} from "./types";
 
 export async function processImage(file: File): Promise<ProcessResponse> {
   const form = new FormData();
   form.append("file", file);
-
   const res = await fetch("/api/process", { method: "POST", body: form });
   if (!res.ok) throw new Error(await extractError(res));
   return res.json();
@@ -12,8 +15,15 @@ export async function processImage(file: File): Promise<ProcessResponse> {
 export async function detectBoard(file: File): Promise<DetectBoardResponse> {
   const form = new FormData();
   form.append("file", file);
-
   const res = await fetch("/api/detect-board", { method: "POST", body: form });
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.json();
+}
+
+export async function debugDetect(file: File): Promise<DebugDetectResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  const res = await fetch("/api/debug-detect", { method: "POST", body: form });
   if (!res.ok) throw new Error(await extractError(res));
   return res.json();
 }
