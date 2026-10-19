@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# C++
+build/
+*.so
+*.a
+
+# JS
+node_modules/
+dist/
+
+# IDE
+.idea/
+.vscode/

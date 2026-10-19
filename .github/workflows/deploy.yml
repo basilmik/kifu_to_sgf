@@ -1,0 +1,81 @@
+name: build-and-deploy
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: "20"
+
+    - name: Install build deps
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cmake g++ ninja-build
+        python -m pip install --upgrade pip
+        pip install pybind11
+
+    - name: Build backend (_kifu_core.so)
+      working-directory: backend
+      run: |
+        cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -Dpybind11_DIR=$(python -c "import pybind11; print(pybind11.get_cmake_dir())")
+        cmake --build build
+
+    - name: Run core tests
+      working-directory: core
+      run: |
+        cmake -B build -G Ninja
+        cmake --build build
+        ctest --test-dir build --output-on-failure
+
+    - name: Build frontend
+      working-directory: frontend
+      run: |
+        npm ci
+        npm run build
+
+    - name: Copy backend to server via SSH
+      uses: appleboy/scp-action@master
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USER }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        source: "backend/main.py,backend/pyproject.toml,backend/_kifu_core*.so"
+        target: "/var/www/kifu_to_sgf/backend"
+        strip_components: 1
+
+    - name: Copy frontend to server via SSH
+      uses: appleboy/scp-action@master
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USER }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        source: "frontend/dist/*"
+        target: "/var/www/kifu_to_sgf/frontend_dist"
+        strip_components: 2
+
+    - name: Restart kifu-backend service
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USER }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        script: |
+          cd /var/www/kifu_to_sgf/backend
+          systemctl daemon-reload
+          sudo systemctl restart kifu-backend.service
