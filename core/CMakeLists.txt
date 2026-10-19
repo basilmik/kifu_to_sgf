@@ -3,7 +3,9 @@ project(kifu_core LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)   # нужно для .so и pybind11
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+find_package(OpenCV REQUIRED COMPONENTS core imgproc)
 
 add_library(kifu STATIC
     src/pipeline.cpp
@@ -11,5 +13,15 @@ add_library(kifu STATIC
 
 target_include_directories(kifu PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${OpenCV_INCLUDE_DIRS}
 )
 
+target_link_libraries(kifu PUBLIC ${OpenCV_LIBS})
+
+option(BUILD_TESTS "Build tests" ON)
+if(BUILD_TESTS)
+    enable_testing()
+    add_executable(kifu_tests tests/test_sum.cpp)
+    target_link_libraries(kifu_tests PRIVATE kifu)
+    add_test(NAME kifu_tests COMMAND kifu_tests)
+endif()

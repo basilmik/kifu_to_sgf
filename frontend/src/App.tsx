@@ -1,84 +1,146 @@
 import { useState } from "react";
-import { processImage, b64ToDataUrl } from "./api";
-import type { ProcessResponse } from "./types";
+import { b64ToDataUrl, detectBoard, processImage } from "./api";
+import type { DetectBoardResponse, ProcessResponse } from "./types";
 
 export default function App() {
   const [file, setFile] = useState<File | null>(null);
-  const [result, setResult] = useState<ProcessResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+
+  const [processing, setProcessing] = useState(false);
+  const [reverseResult, setReverseResult] = useState<ProcessResponse | null>(null);
+
+  const [detecting, setDetecting] = useState(false);
+  const [detectResult, setDetectResult] = useState<DetectBoardResponse | null>(null);
 
   function onChange(e: React.ChangeEvent<HTMLInputElement>) {
     setFile(e.target.files?.[0] ?? null);
-    setResult(null);
+    setReverseResult(null);
+    setDetectResult(null);
     setError(null);
   }
 
-  async function onProcess() {
-    if (!file) {
-      setError("выберите файл");
-      return;
-    }
-    setLoading(true);
+  async function onReverse() {
+    if (!file) return;
+    setProcessing(true);
     setError(null);
     try {
-      const data = await processImage(file);
-      setResult(data);
+      setReverseResult(await processImage(file));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-      setResult(null);
     } finally {
-      setLoading(false);
+      setProcessing(false);
+    }
+  }
+
+  async function onDetect() {
+    if (!file) return;
+    setDetecting(true);
+    setError(null);
+    try {
+      setDetectResult(await detectBoard(file));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDetecting(false);
     }
   }
 
   return (
     <main style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
-      <h1>kifu-to-sgf: тест обработки изображения</h1>
+      <h1>kifu-to-sgf</h1>
 
       <div style={{ marginBottom: 16 }}>
-        <input
-          type="file"
-          accept="image/jpeg,image/png"
-          onChange={onChange}
-        />
+        <input type="file" accept="image/jpeg,image/png" onChange={onChange} />
         <button
-          onClick={onProcess}
-          disabled={!file || loading}
+          onClick={onReverse}
+          disabled={!file || processing}
+          style={{ marginLeft: 12 }}
+        >
+          {processing ? "Обрабатываем..." : "Реверс пикселей"}
+        </button>
+        <button
+          onClick={onDetect}
+          disabled={!file || detecting}
           style={{ marginLeft: 8 }}
         >
-          {loading ? "Обрабатываем..." : "Обработать"}
+          {detecting ? "Ищем доску..." : "Найти доску"}
         </button>
       </div>
 
       {error && <p style={{ color: "crimson" }}>Ошибка: {error}</p>}
 
-      {result && (
+      {reverseResult && (
         <div
           style={{
             display: "grid",
             gridTemplateColumns: "1fr 1fr",
             gap: 16,
-            marginTop: 16,
+            marginTop: 12,
           }}
         >
           <figure style={{ margin: 0 }}>
-            <figcaption>Оригинал ({result.width}x{result.height})</figcaption>
+            <figcaption>
+              Оригинал ({reverseResult.width}x{reverseResult.height})
+            </figcaption>
             <img
-              src={b64ToDataUrl(result.original_png_b64)}
+              src={b64ToDataUrl(reverseResult.original_png_b64)}
               alt="original"
               style={{ maxWidth: "100%", border: "1px solid #ccc" }}
             />
           </figure>
           <figure style={{ margin: 0 }}>
-            <figcaption>Обработано (reverse pixels)</figcaption>
+            <figcaption>Реверс пикселей</figcaption>
             <img
-              src={b64ToDataUrl(result.processed_png_b64)}
+              src={b64ToDataUrl(reverseResult.processed_png_b64)}
               alt="processed"
               style={{ maxWidth: "100%", border: "1px solid #ccc" }}
             />
           </figure>
         </div>
+      )}
+
+      {detectResult && (
+        <>
+          {detectResult.found ? (
+            <p>
+              Доска найдена. Углы:{" "}
+              {detectResult.corners
+                .map(([x, y]) => `(${x}, ${y})`)
+                .join(", ")}
+            </p>
+          ) : (
+            <p style={{ color: "darkorange" }}>
+              Доска не найдена. Попробуйте другое фото или ракурс.
+            </p>
+          )}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "1fr 1fr",
+              gap: 16,
+              marginTop: 12,
+            }}
+          >
+            <figure style={{ margin: 0 }}>
+              <figcaption>
+                Оригинал ({detectResult.width}x{detectResult.height})
+              </figcaption>
+              <img
+                src={b64ToDataUrl(detectResult.original_png_b64)}
+                alt="original"
+                style={{ maxWidth: "100%", border: "1px solid #ccc" }}
+              />
+            </figure>
+            <figure style={{ margin: 0 }}>
+              <figcaption>Найденная доска</figcaption>
+              <img
+                src={b64ToDataUrl(detectResult.marked_png_b64)}
+                alt="detected"
+                style={{ maxWidth: "100%", border: "1px solid #ccc" }}
+              />
+            </figure>
+          </div>
+        </>
       )}
     </main>
   );
