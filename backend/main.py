@@ -24,6 +24,7 @@ class SumResponse(BaseModel):
     result: int
 
 
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
