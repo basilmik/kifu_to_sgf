@@ -118,7 +118,7 @@ DetectInternalResult run_detect(const cv::Mat& bgr,
         double area = cv::contourArea(c);
         double peri = cv::arcLength(c, true);
         std::vector<cv::Point> approx;
-        cv::approxPolyDP(c, approx, 0.02 * peri, true);
+        cv::approxPolyDP(c, approx, 0.03 * peri, true);
 
         bool big_enough = area >= img_area * min_area_ratio;
         bool quad_ok = approx.size() == 4 && is_reasonable_quad(approx);
