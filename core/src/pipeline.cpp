@@ -56,6 +56,32 @@ std::vector<cv::Point> order_corners(const std::vector<cv::Point>& pts) {
     return {tl, tr, br, bl};
 }
 
+// Сводит 5–6 точек к 4: отбрасывает точку, удаление которой меньше всего
+// меняет площадь многоугольника (то есть шумовую).
+std::vector<cv::Point> reduce_to_quad(const std::vector<cv::Point>& pts) {
+    if (pts.size() == 4) return pts;
+    if (pts.size() < 4) return {};
+    double full_area = cv::contourArea(pts);
+    double best_loss = 1e18;
+    std::size_t best_idx = 0;
+    for (std::size_t i = 0; i < pts.size(); ++i) {
+        std::vector<cv::Point> tmp;
+        tmp.reserve(pts.size() - 1);
+        for (std::size_t j = 0; j < pts.size(); ++j) {
+            if (j != i) tmp.push_back(pts[j]);
+        }
+        double a = cv::contourArea(tmp);
+        double loss = std::abs(full_area - a);
+        if (loss < best_loss) { best_loss = loss; best_idx = i; }
+    }
+    std::vector<cv::Point> out;
+    out.reserve(pts.size() - 1);
+    for (std::size_t j = 0; j < pts.size(); ++j) {
+        if (j != best_idx) out.push_back(pts[j]);
+    }
+    return out;
+}
+
 // Перевод cv::Mat (любой глубины/каналов) в RGBA-байты
 std::vector<std::uint8_t> mat_to_rgba(const cv::Mat& src) {
     cv::Mat tmp;
@@ -72,7 +98,6 @@ std::vector<std::uint8_t> mat_to_rgba(const cv::Mat& src) {
         tmp.data, tmp.data + tmp.total() * tmp.channels());
 }
 
-// Общая внутренняя функция. Если debug != nullptr — заполняет его.
 struct DetectInternalResult {
     bool found = false;
     std::vector<cv::Point> ordered_corners;
@@ -83,17 +108,38 @@ DetectInternalResult run_detect(const cv::Mat& bgr,
                                 DebugResult* debug) {
     DetectInternalResult res;
 
-    cv::Mat gray, blurred, edges, edges_processed;
+    // 1. Grayscale
+    cv::Mat gray;
     cv::cvtColor(bgr, gray, cv::COLOR_BGR2GRAY);
-    cv::GaussianBlur(gray, blurred, cv::Size(5, 5), 0);
-    cv::Canny(blurred, edges, 50, 150);
 
+    // 2. CLAHE: локальное выравнивание контраста
+    cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
+    cv::Mat gray_eq;
+    clahe->apply(gray, gray_eq);
+
+    // 3. Лёгкое размытие, чтобы убрать зерно
+    cv::Mat blurred;
+    cv::GaussianBlur(gray_eq, blurred, cv::Size(3, 3), 0);
+
+    // 4. Адаптивная бинаризация: инвертированная, чтобы линии были белыми на чёрном
+    cv::Mat binary;
+    cv::adaptiveThreshold(
+        blurred, binary,
+        255,
+        cv::ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv::THRESH_BINARY_INV,
+        31,   // blockSize — нечётный, ~размер линий
+        10    // C — смещение; больше = меньше пикселей считаются линиями
+    );
+
+    // 5. Морфология: утолщаем и замыкаем линии
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
-    cv::dilate(edges, edges_processed, kernel);
-    cv::erode(edges_processed, edges_processed, kernel);
+    cv::Mat edges_processed;
+    cv::dilate(binary, edges_processed, kernel, cv::Point(-1, -1), 1);
+    cv::erode(edges_processed, edges_processed, kernel, cv::Point(-1, -1), 1);
 
     std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(edges_processed, contours, cv::RETR_EXTERNAL,
+    cv::findContours(edges_processed, contours, cv::RETR_LIST,
                      cv::CHAIN_APPROX_SIMPLE);
 
     std::sort(contours.begin(), contours.end(),
@@ -106,7 +152,8 @@ DetectInternalResult run_detect(const cv::Mat& bgr,
     if (debug) {
         debug->img_area = img_area;
         debug->images.push_back({"gray", gray.cols, gray.rows, mat_to_rgba(gray)});
-        debug->images.push_back({"edges", edges.cols, edges.rows, mat_to_rgba(edges)});
+        debug->images.push_back({"gray_clahe", gray_eq.cols, gray_eq.rows, mat_to_rgba(gray_eq)});
+        debug->images.push_back({"binary", binary.cols, binary.rows, mat_to_rgba(binary)});
         debug->images.push_back({"edges_processed", edges_processed.cols,
                                  edges_processed.rows, mat_to_rgba(edges_processed)});
     }
@@ -117,11 +164,21 @@ DetectInternalResult run_detect(const cv::Mat& bgr,
         const auto& c = contours[i];
         double area = cv::contourArea(c);
         double peri = cv::arcLength(c, true);
+
         std::vector<cv::Point> approx;
         cv::approxPolyDP(c, approx, 0.03 * peri, true);
 
-        bool big_enough = area >= img_area * min_area_ratio;
-        bool quad_ok = approx.size() == 4 && is_reasonable_quad(approx);
+        bool big_enough   = area >= img_area * min_area_ratio;
+        bool small_enough = area <= img_area * 0.90;
+
+        bool quad_ok = false;
+        std::vector<cv::Point> quad;
+        if (approx.size() >= 4 && approx.size() <= 6) {
+            quad = reduce_to_quad(approx);
+            if (quad.size() == 4 && is_reasonable_quad(quad)) {
+                quad_ok = true;
+            }
+        }
 
         if (debug) {
             ContourInfo ci;
@@ -133,8 +190,8 @@ DetectInternalResult run_detect(const cv::Mat& bgr,
             debug->top_contours.push_back(ci);
         }
 
-        if (big_enough && quad_ok && best.empty()) {
-            best = approx;
+        if (big_enough && small_enough && quad_ok && best.empty()) {
+            best = quad;
         }
     }
 
@@ -149,14 +206,16 @@ DetectInternalResult run_detect(const cv::Mat& bgr,
         } else if (debug->top_contours.empty()) {
             debug->note = "no contours processed (unexpected)";
         } else {
-            // формулируем, почему не нашли
-            bool any_big = false, any_quad = false;
+            bool any_big = false, any_small = false, any_quad = false;
             for (const auto& ci : debug->top_contours) {
                 if (ci.area >= img_area * min_area_ratio) any_big = true;
-                if (ci.approx_points == 4 && ci.reasonable) any_quad = true;
+                if (ci.area <= img_area * 0.90) any_small = true;
+                if (ci.reasonable) any_quad = true;
             }
             if (!any_big) {
                 debug->note = "no contour larger than min_area_ratio";
+            } else if (!any_small) {
+                debug->note = "contour is too big (likely full page)";
             } else if (!any_quad) {
                 debug->note = "no reasonable 4-point quad among top contours";
             } else if (!res.found) {
