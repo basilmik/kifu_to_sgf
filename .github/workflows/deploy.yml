@@ -69,6 +69,17 @@ jobs:
         target: "/var/www/kifu_to_sgf/frontend_dist"
         strip_components: 2
 
+    - name: Install Python deps on server
+      uses: appleboy/ssh-action@master
+      with:
+        host: ${{ secrets.SSH_HOST }}
+        username: ${{ secrets.SSH_USER }}
+        key: ${{ secrets.SSH_PRIVATE_KEY }}
+        script: |
+          set -e
+          /var/www/kifu_to_sgf/venv/bin/pip install --upgrade pip
+          /var/www/kifu_to_sgf/venv/bin/pip install -e /var/www/kifu_to_sgf/backend
+
     - name: Restart kifu-backend service
       uses: appleboy/ssh-action@master
       with:
@@ -76,6 +87,7 @@ jobs:
         username: ${{ secrets.SSH_USER }}
         key: ${{ secrets.SSH_PRIVATE_KEY }}
         script: |
-          cd /var/www/kifu_to_sgf/backend
+          set -e
           systemctl daemon-reload
-          sudo systemctl restart kifu-backend.service
+          systemctl restart kifu-backend.service
+          systemctl status kifu-backend.service --no-pager
