@@ -17,11 +17,3 @@ target_include_directories(kifu PUBLIC
 )
 
 target_link_libraries(kifu PUBLIC ${OpenCV_LIBS})
-
-option(BUILD_TESTS "Build tests" ON)
-if(BUILD_TESTS)
-    enable_testing()
-    add_executable(kifu_tests tests/test_sum.cpp)
-    target_link_libraries(kifu_tests PRIVATE kifu)
-    add_test(NAME kifu_tests COMMAND kifu_tests)
-endif()

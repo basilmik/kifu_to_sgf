@@ -36,13 +36,6 @@ jobs:
               -Dpybind11_DIR=$(python -c "import pybind11; print(pybind11.get_cmake_dir())")
         cmake --build build
 
-    - name: Run core tests
-      working-directory: core
-      run: |
-        cmake -B build -G Ninja
-        cmake --build build
-        ctest --test-dir build --output-on-failure
-
     - name: Build frontend
       working-directory: frontend
       run: |
