@@ -52,13 +52,10 @@ export async function detectGrid(
   form.append("file", file);
   form.append("grid_size", "19");
 
-  const response = await fetch(
-    "http://localhost:8000/api/grid",
-    {
-      method: "POST",
-      body: form,
-    }
-  );
+  const response = await fetch("/api/grid", {
+    method: "POST",
+    body: form,
+  });
 
   if (!response.ok) {
     const text = await response.text();
