@@ -2,7 +2,6 @@ import type {
   DebugDetectResponse,
   DetectBoardResponse,
   ProcessResponse,
-  GridPoint, 
   GridResponse,
 } from "./types";
 
