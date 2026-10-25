@@ -39,3 +39,27 @@ export interface DebugDetectResponse {
   images: DebugImage[];
   top_contours: ContourInfo[];
 }
+
+export type GridPoint = [number, number];
+
+export interface GridResponse {
+  found: boolean;
+  note: string;
+
+  grid_size: number;
+
+  original_width: number;
+  original_height: number;
+
+  rectified_side: number;
+  rectified_png_b64: string | null;
+
+  corners_original: GridPoint[];
+  grid_points_original: GridPoint[];
+
+  x_lines: number[];
+  y_lines: number[];
+
+  x_quality: number;
+  y_quality: number;
+}

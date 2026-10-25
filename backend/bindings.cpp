@@ -74,9 +74,68 @@ py::dict detect_board_debug(py::bytes data, int width, int height) {
     return d;
 }
 
+py::dict rectify_grid(
+    py::bytes data,
+    int width,
+    int height,
+    const std::vector<std::pair<float, float>>& manual_corners,
+    int grid_size,
+    int output_side
+) {
+    std::string buf = data;
+
+    std::vector<std::uint8_t> in(
+        buf.begin(),
+        buf.end()
+    );
+
+    auto r = kifu::rectify_grid(
+        in,
+        width,
+        height,
+        manual_corners,
+        grid_size,
+        output_side
+    );
+
+    py::dict d;
+
+    d["found"] = r.found;
+    d["note"] = r.note;
+    d["grid_size"] = r.grid_size;
+    d["rectified_side"] = r.rectified_side;
+
+    d["corners"] = py::cast(r.corners);
+
+    d["x_lines"] = py::cast(r.x_lines);
+    d["y_lines"] = py::cast(r.y_lines);
+
+    d["grid_points_image"] =
+        py::cast(r.grid_points_image);
+
+    d["x_quality"] = r.x_quality;
+    d["y_quality"] = r.y_quality;
+
+    if (!r.rectified_rgba.empty()) {
+        d["rectified_rgba"] = py::bytes(
+            reinterpret_cast<const char*>(
+                r.rectified_rgba.data()
+            ),
+            r.rectified_rgba.size()
+        );
+    } else {
+        d["rectified_rgba"] = py::bytes("");
+    }
+
+    return d;
+}
+
+
 PYBIND11_MODULE(_kifu_core, m) {
     m.doc() = "kifu core bindings";
     m.def("reverse", &reverse, "Reverse RGBA pixels");
     m.def("detect_board", &detect_board, "Detect board rectangle");
     m.def("detect_board_debug", &detect_board_debug, "Detect board rectangle (debug)");
+    m.def("rectify_grid", &rectify_grid, py::arg("data"), py::arg("width"), py::arg("height"), 
+        py::arg("manual_corners") =std::vector<std::pair<float, float>>{}, py::arg("grid_size") = 19, py::arg("output_side") = 1400);
 }

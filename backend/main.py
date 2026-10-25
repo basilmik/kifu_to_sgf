@@ -1,11 +1,11 @@
 import base64
 import io
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 
-from _kifu_core import detect_board, detect_board_debug, reverse
+from _kifu_core import detect_board, detect_board_debug, reverse, rectify_grid
 
 # Максимальная длинная сторона входного изображения.
 # Мобилка шлёт 4000-12000 px, но для детекции доски хватает 2000.
@@ -162,4 +162,131 @@ async def debug_detect_endpoint(file: UploadFile = File(...)):
         "corners": corners_orig,
         "images": images,
         "top_contours": contours,
+    }
+
+
+@app.post("/api/grid")
+async def grid_endpoint(
+    file: UploadFile = File(...),
+    manual_corners: str | None = Form(None),
+    grid_size: int = Form(19),
+):
+    if file.content_type not in ("image/jpeg", "image/png"):
+        raise HTTPException(
+            400,
+            "only JPEG and PNG are supported"
+        )
+
+    if grid_size not in (9, 13, 19):
+        raise HTTPException(
+            422,
+            "grid_size must be 9, 13 or 19"
+        )
+
+    raw = await file.read()
+
+    if not raw:
+        raise HTTPException(400, "empty file")
+
+    img, scale = _load_rgba(raw)
+
+    width, height = img.size
+
+    # Углы пользователь передаёт в координатах
+    # оригинального изображения (после EXIF-поворота).
+    corners_scaled = []
+
+    if manual_corners:
+        try:
+            points = json.loads(manual_corners)
+
+            if not isinstance(points, list) or len(points) != 4:
+                raise ValueError("exactly 4 corners required")
+
+            for point in points:
+                if not isinstance(point, list) or len(point) != 2:
+                    raise ValueError("each corner must be [x, y]")
+
+                x = float(point[0])
+                y = float(point[1])
+
+                if not math.isfinite(x) or not math.isfinite(y):
+                    raise ValueError("non-finite coordinates")
+
+                corners_scaled.append((
+                    x / scale,
+                    y / scale
+                ))
+
+        except (ValueError, TypeError) as e:
+            raise HTTPException(
+                422,
+                f"invalid manual_corners: {e}"
+            )
+
+    try:
+        result = rectify_grid(
+            img.tobytes(),
+            width,
+            height,
+            corners_scaled,
+            grid_size,
+            1400
+        )
+
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+    except Exception as e:
+        raise HTTPException(
+            500,
+            f"grid processing error: {e}"
+        )
+
+    # Восстанавливаем выпрямленное изображение.
+    rectified_png_b64 = None
+
+    side = result["rectified_side"]
+
+    if side > 0:
+        rectified = Image.frombytes(
+            "RGBA",
+            (side, side),
+            result["rectified_rgba"]
+        )
+
+        rectified_png_b64 = _png_b64(rectified)
+
+    # Координаты сетки C++ возвращает в масштабе
+    # уменьшенной фотографии.
+    # Переводим их в исходный масштаб.
+    grid_points_original = [
+        [round(x * scale, 2), round(y * scale, 2)]
+        for x, y in result["grid_points_image"]
+    ]
+
+    corners_original = [
+        [round(x * scale, 2), round(y * scale, 2)]
+        for x, y in result["corners"]
+    ]
+
+    return {
+        "found": result["found"],
+        "note": result["note"],
+        "grid_size": result["grid_size"],
+
+        "original_width": round(width * scale),
+        "original_height": round(height * scale),
+
+        "rectified_side": side,
+        "rectified_png_b64": rectified_png_b64,
+
+        "corners_original": corners_original,
+        "grid_points_original": grid_points_original,
+
+        "x_lines": result["x_lines"],
+        "y_lines": result["y_lines"],
+
+        "x_quality": result["x_quality"],
+        "y_quality": result["y_quality"]
     }

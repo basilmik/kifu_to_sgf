@@ -103,6 +103,7 @@ struct DetectInternalResult {
     std::vector<cv::Point> ordered_corners;
 };
 
+
 DetectInternalResult run_detect(const cv::Mat& bgr,
                                 double min_area_ratio,
                                 DebugResult* debug) {
@@ -291,4 +292,392 @@ DebugResult detect_board_debug(const std::vector<std::uint8_t>& rgba, int width,
     return result;
 }
 
+
+bool fit_grid_axis(const cv::Mat& line_mask, bool vertical, int grid_size, std::vector<float>& positions, double& quality) {
+    positions.clear();
+    quality = 0.0;
+
+    const int length = vertical
+        ? line_mask.cols
+        : line_mask.rows;
+
+    const int line_length = vertical
+        ? line_mask.rows
+        : line_mask.cols;
+
+    // 1. Строим профиль количества пикселей линий.
+    std::vector<float> profile(length, 0.0f);
+
+    for (int i = 0; i < length; ++i) {
+        if (vertical) {
+            profile[i] = static_cast<float>(
+                cv::countNonZero(line_mask.col(i))
+            );
+        } else {
+            profile[i] = static_cast<float>(
+                cv::countNonZero(line_mask.row(i))
+            );
+        }
+    }
+    // 2. Сглаживаем профиль.
+    std::vector<float> smooth(length, 0.0f);
+    for (int i = 0; i < length; ++i) {
+        float sum = 0.0f;
+        int count = 0;
+
+        for (int d = -3; d <= 3; ++d) {
+            const int j = i + d;
+
+            if (j >= 0 && j < length) {
+                sum += profile[j];
+                ++count;
+            }
+        }
+        smooth[i] = sum / count;
+    }
+    const float max_signal = *std::max_element(
+        smooth.begin(), smooth.end()
+    );
+    // Нет достаточно длинных линий.
+    if (max_signal < line_length * 0.08f) {
+        return false;
+    }
+    // 3. Перебираем модели регулярной сетки.
+    const float min_step =
+        0.50f * length / (grid_size - 1);
+
+    const float max_step =
+        0.98f * length / (grid_size - 1);
+
+    double best_score = -1.0;
+
+    float best_start = 0.0f;
+    float best_step = 0.0f;
+    double best_quality = 0.0;
+    const int min_hits = static_cast<int>(
+        std::ceil(grid_size * 0.70)
+    );
+
+    for (float step = min_step; step <= max_step; step += 0.25f) {
+        const int max_start = static_cast<int>(
+            std::floor(
+                length - 1 - (grid_size - 1) * step
+            )
+        );
+
+        for (int start = 0; start <= max_start; ++start) {
+            double sum = 0.0;
+            int hits = 0;
+
+            for (int i = 0; i < grid_size; ++i) {
+                const int pos = static_cast<int>(
+                    std::round(start + i * step)
+                );
+
+                const float signal = smooth[pos];
+
+                sum += signal;
+
+                if (signal >= max_signal * 0.20f) {
+                    ++hits;
+                }
+            }
+            // Не менее 70% линий должны иметь заметное подтверждение на изображении.
+            if (hits < min_hits) {
+                continue;
+            }
+            // Дополнительно поощряем модели, подтверждённые большим количеством линий.
+            const double score =
+                sum + hits * max_signal * 0.08;
+
+            if (score > best_score) {
+                best_score = score;
+                best_start = start;
+                best_step = step;
+
+                best_quality =
+                    sum / (grid_size * max_signal);
+            }
+        }
+    }
+    if (best_score < 0.0 || best_quality < 0.25) {
+        return false;
+    }
+    // 4. Возвращаем регулярную модель.
+    // Даже если часть реальных линий закрыта цифрами,
+    // координаты восстанавливаются по общему шагу.
+    for (int i = 0; i < grid_size; ++i) {
+        positions.push_back(
+            best_start + i * best_step
+        );
+    }
+    quality = best_quality;
+    return true;
+}
+
+
+GridResult rectify_grid(const std::vector<std::uint8_t>& rgba, int width, int height, const std::vector<std::pair<float, float>>& manual_corners, int grid_size, int output_side) 
+{
+    if (width <= 0 || height <= 0 ||
+        rgba.size() !=
+            static_cast<std::size_t>(width) *
+            static_cast<std::size_t>(height) * 4) {
+        throw std::invalid_argument("invalid RGBA image");
+    }
+
+    if (grid_size != 9 &&
+        grid_size != 13 &&
+        grid_size != 19) {
+        throw std::invalid_argument("unsupported grid size");
+    }
+
+    if (output_side < 512 || output_side > 4096) {
+        throw std::invalid_argument("invalid output_side");
+    }
+
+    if (!manual_corners.empty() &&
+        manual_corners.size() != 4) {
+        throw std::invalid_argument(
+            "manual_corners must contain exactly 4 points"
+        );
+    }
+    GridResult result;
+    result.grid_size = grid_size;
+    
+    // 1. Конвертация входного RGBA в BGR.
+    cv::Mat rgba_mat(
+        height,
+        width,
+        CV_8UC4,
+        const_cast<std::uint8_t*>(rgba.data())
+    );
+
+    cv::Mat bgr;
+    cv::cvtColor(rgba_mat, bgr, cv::COLOR_RGBA2BGR);
+
+    // 2. Получение четырёх углов.
+    std::vector<cv::Point2f> src;
+
+    const bool manual = !manual_corners.empty();
+
+    if (manual) {
+        for (const auto& p : manual_corners) {
+            src.emplace_back(p.first, p.second);
+        }
+    } else {
+        auto detected = run_detect(bgr, 0.10, nullptr);
+
+        if (!detected.found) {
+            result.note = "board quadrilateral not found";
+            return result;
+        }
+
+        for (const auto& p : detected.ordered_corners) {
+            src.emplace_back(
+                static_cast<float>(p.x),
+                static_cast<float>(p.y)
+            );
+        }
+    }
+
+    // Углы должны задавать выпуклый четырёхугольник.
+    if (!cv::isContourConvex(src) ||
+        std::abs(cv::contourArea(src)) < 100.0) {
+        throw std::invalid_argument(
+            "invalid or unordered board corners"
+        );
+    }
+
+    for (const auto& p : src) {
+        result.corners.emplace_back(p.x, p.y);
+    }
+
+    // 3. Задаём прямоугольник назначения.
+    //
+    // Небольшое поле по краям нужно, чтобы
+    // крайние линии сетки не обрезались.
+
+    const float pad = output_side * 0.045f;
+    const float last = output_side - 1.0f - pad;
+
+    std::vector<cv::Point2f> dst = {
+        {pad, pad},
+        {last, pad},
+        {last, last},
+        {pad, last}
+    };
+
+    // 4. Перспективное преобразование.
+    cv::Mat H = cv::getPerspectiveTransform(src, dst);
+
+    cv::Mat rectified;
+
+    cv::warpPerspective(
+        bgr,
+        rectified,
+        H,
+        cv::Size(output_side, output_side),
+        cv::INTER_CUBIC,
+        cv::BORDER_CONSTANT,
+        cv::Scalar(255, 255, 255)
+    );
+
+    result.rectified_side = output_side;
+    result.rectified_rgba = mat_to_rgba(rectified);
+
+    // 5. Получение координат линий.
+    if (manual) {
+        // В ручном режиме четыре угла относятся именно
+        // к крайним пересечениям доски.
+        //
+        // После перспективного преобразования
+        // сетку можно задать геометрически.
+
+        const float span = last - pad;
+
+        for (int i = 0; i < grid_size; ++i) {
+            const float position =
+                pad + span * i / (grid_size - 1);
+
+            result.x_lines.push_back(position);
+            result.y_lines.push_back(position);
+        }
+
+        result.note = "grid from manual corners";
+    } else {
+        // Автоматический режим:
+        // ищем реальные линии на выпрямленном фото.
+
+        cv::Mat gray;
+        cv::cvtColor(
+            rectified,
+            gray,
+            cv::COLOR_BGR2GRAY
+        );
+
+        auto clahe = cv::createCLAHE(
+            2.0,
+            cv::Size(8, 8)
+        );
+
+        cv::Mat enhanced;
+        clahe->apply(gray, enhanced);
+
+        cv::Mat binary;
+
+        cv::adaptiveThreshold(
+            enhanced,
+            binary,
+            255,
+            cv::ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv::THRESH_BINARY_INV,
+            41,
+            8
+        );
+
+        // Выделяем длинные горизонтальные
+        // и вертикальные элементы.
+        const int kernel_length = std::max(
+            15,
+            output_side / (grid_size * 3)
+        );
+
+        cv::Mat vertical_kernel =
+            cv::getStructuringElement(
+                cv::MORPH_RECT,
+                cv::Size(1, kernel_length)
+            );
+
+        cv::Mat horizontal_kernel =
+            cv::getStructuringElement(
+                cv::MORPH_RECT,
+                cv::Size(kernel_length, 1)
+            );
+
+        cv::Mat vertical_lines;
+        cv::Mat horizontal_lines;
+
+        cv::morphologyEx(
+            binary,
+            vertical_lines,
+            cv::MORPH_OPEN,
+            vertical_kernel
+        );
+
+        cv::morphologyEx(
+            binary,
+            horizontal_lines,
+            cv::MORPH_OPEN,
+            horizontal_kernel
+        );
+
+        // Подгоняем модель регулярной сетки.
+        const bool x_ok = fit_grid_axis(
+            vertical_lines,
+            true,
+            grid_size,
+            result.x_lines,
+            result.x_quality
+        );
+
+        const bool y_ok = fit_grid_axis(
+            horizontal_lines,
+            false,
+            grid_size,
+            result.y_lines,
+            result.y_quality
+        );
+
+        if (!x_ok || !y_ok) {
+            result.x_lines.clear();
+            result.y_lines.clear();
+
+            result.note =
+                "quadrilateral found, but grid not confirmed";
+
+            return result;
+        }
+
+        result.note = "automatic grid fitted";
+    }
+
+    // 6. Строим все пересечения
+    // в координатах выпрямленного изображения.
+    std::vector<cv::Point2f> rectified_points;
+
+    for (int row = 0; row < grid_size; ++row) {
+        for (int col = 0; col < grid_size; ++col) {
+            rectified_points.emplace_back(
+                result.x_lines[col],
+                result.y_lines[row]
+            );
+        }
+    }
+
+    // 7. Обратное перспективное преобразование.
+    //
+    // Нужно, чтобы фронтенд мог показать
+    // пересечения поверх исходного фото.
+
+    cv::Mat H_inv = H.inv();
+
+    std::vector<cv::Point2f> image_points;
+
+    cv::perspectiveTransform(
+        rectified_points,
+        image_points,
+        H_inv
+    );
+
+    for (const auto& p : image_points) {
+        result.grid_points_image.emplace_back(
+            p.x,
+            p.y
+        );
+    }
+
+    result.found = true;
+
+    return result;
+}
 }  // namespace kifu

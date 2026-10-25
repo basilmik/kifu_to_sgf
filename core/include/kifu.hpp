@@ -39,9 +39,26 @@ struct DebugResult {
     std::string note;                 // краткое пояснение, почему не нашли
 };
 
+struct GridResult {
+    bool found = false;
+    std::string note;
+    int grid_size = 19;
+    int rectified_side = 0;
+    std::vector<std::pair<float, float>> corners;
+    std::vector<std::uint8_t> rectified_rgba;
+    std::vector<float> x_lines;
+    std::vector<float> y_lines;
+    std::vector<std::pair<float, float>> grid_points_image;
+    double x_quality = 0.0;
+    double y_quality = 0.0;
+};
+
+
 DetectResult detect_board(const std::vector<std::uint8_t>& rgba, int width, int height);
 
 // Отладочная версия того же детектора
 DebugResult detect_board_debug(const std::vector<std::uint8_t>& rgba, int width, int height);
+
+GridResult rectify_grid(const std::vector<std::uint8_t>& rgba, int width, int height, const std::vector<std::pair<float, float>>& manual_corners, int grid_size = 19, int output_side = 1400);
 
 }  // namespace kifu

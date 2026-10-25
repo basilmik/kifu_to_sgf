@@ -2,6 +2,8 @@ import type {
   DebugDetectResponse,
   DetectBoardResponse,
   ProcessResponse,
+  GridPoint, 
+  GridResponse,
 } from "./types";
 
 export async function processImage(file: File): Promise<ProcessResponse> {
@@ -41,4 +43,28 @@ async function extractError(res: Response): Promise<string> {
     // ignore
   }
   return detail;
+}
+
+export async function detectGrid(
+  file: File
+): Promise<GridResponse> {
+  const form = new FormData();
+
+  form.append("file", file);
+  form.append("grid_size", "19");
+
+  const response = await fetch(
+    "http://localhost:8000/api/grid",
+    {
+      method: "POST",
+      body: form,
+    }
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Grid detection failed: ${text}`);
+  }
+
+  return response.json() as Promise<GridResponse>;
 }
