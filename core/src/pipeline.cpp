@@ -160,7 +160,7 @@ DetectInternalResult run_detect(const cv::Mat& bgr,
     }
 
     std::vector<cv::Point> best;
-    const std::size_t limit = std::min<std::size_t>(contours.size(), 60);
+    const std::size_t limit = std::min<std::size_t>(contours.size(), 10);
     for (std::size_t i = 0; i < limit; ++i) {
         const auto& c = contours[i];
         double area = cv::contourArea(c);
@@ -169,12 +169,8 @@ DetectInternalResult run_detect(const cv::Mat& bgr,
         std::vector<cv::Point> approx;
         // cv::approxPolyDP(c, approx, 0.03 * peri, true);
 
-        // bool big_enough   = area >= img_area * min_area_ratio;
-        // bool small_enough = area <= img_area * 0.90;
-
-        // TEST NEW LIMITS: RETURN BACK LATER
-        bool big_enough = area >= img_area * 0.025;
-        bool small_enough = area <= img_area * 0.995;
+        bool big_enough   = area >= img_area * min_area_ratio;
+        bool small_enough = area <= img_area * 0.90;
 
         std::vector<cv::Point> quad;
         for (double eps : {0.015, 0.02, 0.03, 0.045, 0.06}) {
