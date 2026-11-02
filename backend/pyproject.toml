@@ -15,3 +15,6 @@ dependencies = [
 
 [project.optional-dependencies]
 build = ["pybind11>=2.11"]
+
+[tool.setuptools]
+py-modules = ["main", "ocr_baseline"]
