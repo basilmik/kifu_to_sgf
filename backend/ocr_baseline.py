@@ -19,9 +19,9 @@ def get_paddle_model():
     from paddleocr import TextRecognition
 
     return TextRecognition(
-        model_name="PP-OCRv5_server_rec",
+        model_name="PP-OCRv5_mobile_rec",
         device="cpu",
-        cpu_threads=2,
+        cpu_threads=1,
     )
 
 
