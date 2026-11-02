@@ -60,6 +60,179 @@ def _crnn_net():
 
     return net
 
+
+# def _mask_and_digits(
+#     gray: np.ndarray,
+#     cx: int,
+#     cy: int,
+#     pitch: float,
+# ):
+#     blurred = cv2.GaussianBlur(
+#         gray, (3, 3), 0
+#     )
+
+#     _, mask = cv2.threshold(
+#         blurred,
+#         0,
+#         255,
+#         cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU,
+#     )
+
+#     # Удаляем предполагаемые линии сетки.
+#     # Только в ветке сегментации: исходный ROI
+#     # для CRNN не изменяем.
+#     line_width = max(
+#         1, int(round(pitch * 0.025))
+#     )
+
+#     cv2.line(
+#         mask,
+#         (cx, 0),
+#         (cx, mask.shape[0] - 1),
+#         0,
+#         line_width,
+#     )
+
+#     cv2.line(
+#         mask,
+#         (0, cy),
+#         (mask.shape[1] - 1, cy),
+#         0,
+#         line_width,
+#     )
+
+#     # Частично соединяем разорванные штрихи.
+#     mask = cv2.morphologyEx(
+#         mask,
+#         cv2.MORPH_CLOSE,
+#         np.ones((2, 2), np.uint8),
+#     )
+
+#     # Убираем мелкий шум.
+#     count, labels, stats, _ = (
+#         cv2.connectedComponentsWithStats(mask, 8)
+#     )
+
+#     cleaned = np.zeros_like(mask)
+
+#     min_area = max(
+#         4, int(pitch * pitch * 0.002)
+#     )
+
+#     for i in range(1, count):
+#         x, y, w, h, area = stats[i]
+
+#         if (
+#             area >= min_area
+#             and h >= 4
+#             and w <= mask.shape[1] * 0.95
+#         ):
+#             cleaned[labels == i] = 255
+
+#     ys, xs = np.where(cleaned > 0)
+
+#     if not len(xs):
+#         return cleaned, [], "blank"
+
+#     min_x = int(xs.min())
+#     max_x = int(xs.max()) + 1
+
+#     min_y = int(ys.min())
+#     max_y = int(ys.max()) + 1
+
+#     tight = cleaned[
+#         min_y:max_y,
+#         min_x:max_x,
+#     ]
+
+#     # Вертикальная проекция.
+#     occupied = np.any(
+#         tight > 0, axis=0
+#     ).astype(np.int8)
+
+#     padded = np.pad(occupied, (1, 1))
+
+#     starts = np.where(
+#         np.diff(padded) == 1
+#     )[0]
+
+#     ends = np.where(
+#         np.diff(padded) == -1
+#     )[0]
+
+#     runs = list(zip(starts, ends))
+
+#     # Для этого эксперимента допускаем
+#     # от 1 до 3 отдельных цифр.
+#     if not 1 <= len(runs) <= 3:
+#         return (
+#             cleaned,
+#             [],
+#             f"uncertain_split:{len(runs)}",
+#         )
+
+#     digits = []
+
+#     for a, b in runs:
+#         fragment = tight[:, a:b]
+
+#         yy, xx = np.where(fragment > 0)
+
+#         if not len(xx):
+#             return cleaned, [], "empty_segment"
+
+#         digit = fragment[
+#             yy.min():yy.max() + 1,
+#             xx.min():xx.max() + 1,
+#         ]
+
+#         digits.append(digit)
+
+#     return cleaned, digits, "ok"
+
+def make_soft_ink(
+    gray: np.ndarray,
+    gamma: float = 1.5,
+    low: float = 8.0,
+    high: float = 125.0,
+) -> np.ndarray:
+    """
+    Преобразует grayscale в мягкую маску чернил.
+
+    Выход:
+        0   = фон
+        255 = самый тёмный штрих
+
+    Сохраняет промежуточные оттенки.
+    """
+
+    image = gray.astype(np.float32)
+
+    # Яркость бумаги оцениваем по светлым
+    # пикселям самого ROI.
+    paper = float(np.percentile(image, 90))
+
+    # Насколько каждый пиксель темнее бумаги.
+    darkness = np.maximum(
+        paper - image,
+        0.0,
+    )
+
+    # Небольшое подавление слабых оттенков.
+    strength = np.clip(
+        (darkness - low) / (high - low),
+        0.0,
+        1.0,
+    )
+
+    # Усиливаем различие между светлыми
+    # линиями и тёмными цифрами.
+    strength = np.power(strength, gamma)
+
+    return np.round(
+        strength * 255
+    ).astype(np.uint8)
+
 def _mask_and_digits(
     gray: np.ndarray,
     cx: int,
@@ -178,7 +351,7 @@ def _mask_and_digits(
         else:
             merged.append([a, b])
 
-    # 7. Фильтруем слабые изолированные группы.
+    # 7. Фильтруем слабые изолированные группы.Yt
     #
     # Не удаляем их из изображения — только
     # исключаем из кандидатов сегментации.
@@ -233,160 +406,6 @@ def _mask_and_digits(
         digits.append(fragment)
 
     return ink, digits, "ok"
-
-
-def make_soft_ink(
-    gray: np.ndarray,
-    gamma: float = 1.5,
-    low: float = 8.0,
-    high: float = 125.0,
-) -> np.ndarray:
-    """
-    Преобразует grayscale в мягкую маску чернил.
-
-    Выход:
-        0   = фон
-        255 = самый тёмный штрих
-
-    Сохраняет промежуточные оттенки.
-    """
-
-    image = gray.astype(np.float32)
-
-    # Яркость бумаги оцениваем по светлым
-    # пикселям самого ROI.
-    paper = float(np.percentile(image, 90))
-
-    # Насколько каждый пиксель темнее бумаги.
-    darkness = np.maximum(
-        paper - image,
-        0.0,
-    )
-
-    # Небольшое подавление слабых оттенков.
-    strength = np.clip(
-        (darkness - low) / (high - low),
-        0.0,
-        1.0,
-    )
-
-    # Усиливаем различие между светлыми
-    # линиями и тёмными цифрами.
-    strength = np.power(strength, gamma)
-
-    return np.round(
-        strength * 255
-    ).astype(np.uint8)
-
-def _mask_and_digits(
-    gray: np.ndarray,
-    cx: int,
-    cy: int,
-    pitch: float,
-):
-    # 1. Бинаризация без удаления линий.
-    # Белые пиксели = тёмные элементы изображения.
-    # _, mask = cv2.threshold(
-    #     gray,
-    #     0,
-    #     255,
-    #     cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU,
-    # )
-
-    mask = make_soft_ink(
-        gray,
-        gamma=1.5,
-        low=8.0,
-        high=125.0,
-    )
-
-    h, w = mask.shape
-
-    # 2. Вертикальная проекция.
-    #
-    # Центральную горизонтальную линию не учитываем
-    # только при расчёте проекции.
-    # В самом изображении она остаётся!
-
-    band = max(1, round(pitch * 0.035))
-
-    projection_rows = np.ones(h, dtype=bool)
-
-    projection_rows[
-        max(0, cy - band):
-        min(h, cy + band + 1)
-    ] = False
-
-    if not projection_rows.any():
-        return mask, [], "invalid_roi"
-
-    # projection = np.count_nonzero(
-    #     mask[projection_rows, :],
-    #     axis=0,
-    # )
-
-    projection = np.count_nonzero(
-        mask[projection_rows, :] >= 90,
-        axis=0,
-    )
-
-    # 3. Определяем столбцы со штрихами.
-    min_signal = max(
-        2,
-        round(projection_rows.sum() * 0.05),
-    )
-
-    occupied = projection >= min_signal
-
-    # 4. Находим непрерывные группы столбцов.
-    padded = np.pad(
-        occupied.astype(np.int8),
-        (1, 1),
-    )
-
-    transitions = np.diff(padded)
-
-    starts = np.where(transitions == 1)[0]
-    ends = np.where(transitions == -1)[0]
-
-    min_width = max(
-        2,
-        round(pitch * 0.035),
-    )
-
-    runs = [
-        (int(a), int(b))
-        for a, b in zip(starts, ends)
-        if b - a >= min_width
-    ]
-
-    # 5. Проверяем, получилось ли разделение.
-    if len(runs) == 0:
-        return mask, [], "blank_or_uncertain"
-
-    if len(runs) > 3:
-        return mask, [], f"uncertain_split:{len(runs)}"
-
-    # Очень широкая единая группа может означать,
-    # что несколько цифр касаются друг друга.
-    if (
-        len(runs) == 1
-        and runs[0][1] - runs[0][0] > pitch * 0.5
-    ):
-        return mask, [], "possibly_joined_digits"
-
-    # 6. Вырезаем предполагаемые цифры.
-    #
-    # ВАЖНО: используем исходную бинарную маску.
-    # Никаких линий сетки из неё не удаляли.
-    digits = []
-
-    for a, b in runs:
-        fragment = mask[:, a:b].copy()
-
-        digits.append(fragment)
-
-    return mask, digits, "ok"
 
 def _crnn_text(gray: np.ndarray) -> str:
     # Модель OpenCV Zoo ожидает 100x32.
