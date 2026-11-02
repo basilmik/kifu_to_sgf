@@ -130,7 +130,7 @@ export async function compareGridOCR(
         max_move: 500,
 
         compare_models: true,
-        max_rois: 100,
+        max_rois: 5,
       }),
     }
   );
