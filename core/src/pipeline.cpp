@@ -176,7 +176,6 @@ DetectInternalResult run_detect(const cv::Mat& bgr,
         bool big_enough = area >= img_area * 0.025;
         bool small_enough = area <= img_area * 0.995;
 
-        bool quad_ok = false;
         std::vector<cv::Point> quad;
         for (double eps : {0.015, 0.02, 0.03, 0.045, 0.06}) {
             std::vector<cv::Point> candidate;
@@ -638,6 +637,8 @@ GridResult rectify_grid(const std::vector<std::uint8_t>& rgba, int width, int he
         const float estimated_step =
             static_cast<float>(output_side) / (grid_size - 1);
 
+        cv::Mat final_vertical_lines;
+        cv::Mat final_horizontal_lines;
         for (float factor : {0.25f, 0.40f, 0.55f}) {
             const int kernel_length = std::max(
                 15,
@@ -685,6 +686,8 @@ GridResult rectify_grid(const std::vector<std::uint8_t>& rgba, int width, int he
             bool y_ok = fit_grid_axis(
                 horizontal_lines, false, grid_size, ys, qy
             );
+            final_vertical_lines = vertical_lines
+            final_horizontal_lines = horizontal_lines
 
             if (!x_ok || !y_ok) continue;
 
@@ -712,7 +715,7 @@ GridResult rectify_grid(const std::vector<std::uint8_t>& rgba, int width, int he
 
         // Подгоняем модель регулярной сетки.
         const bool x_ok = fit_grid_axis(
-            vertical_lines,
+            final_vertical_lines,
             true,
             grid_size,
             result.x_lines,
@@ -720,7 +723,7 @@ GridResult rectify_grid(const std::vector<std::uint8_t>& rgba, int width, int he
         );
 
         const bool y_ok = fit_grid_axis(
-            horizontal_lines,
+            final_horizontal_lines,
             false,
             grid_size,
             result.y_lines,
