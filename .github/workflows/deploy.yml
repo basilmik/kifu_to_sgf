@@ -71,11 +71,7 @@ jobs:
         script: |
           set -e
           apt-get update
-          apt-get install -y \ 
-            libopencv-dev \
-            tesseract-ocr \
-            tesseract-ocr-eng
-
+          apt-get install -y libopencv-dev tesseract-ocr tesseract-ocr-eng
           tesseract --version
 
     - name: Install Python deps on server
