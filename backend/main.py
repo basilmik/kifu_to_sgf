@@ -15,7 +15,7 @@ from _kifu_core import detect_board, detect_board_debug, reverse, rectify_grid
 
 # Максимальная длинная сторона входного изображения.
 # Мобилка шлёт 4000-12000 px, но для детекции доски хватает 2000.
-MAX_SIDE = 2000
+MAX_SIDE = 4000
 
 app = FastAPI()
 
@@ -423,7 +423,7 @@ async def compare_digit_models_endpoint(
     if not 1 <= req.max_rois <= 12:
         raise HTTPException(422, "invalid max_rois")
 
-    if len(req.rectified_png_b64) > 20_000_000:
+    if len(req.rectified_png_b64) > 60_000_000:
         raise HTTPException(413, "image too large")
 
     try:
@@ -436,7 +436,7 @@ async def compare_digit_models_endpoint(
             if source.format != "PNG":
                 raise ValueError("expected PNG")
 
-            if max(source.size) > 4096:
+            if max(source.size) > 6000:
                 raise ValueError("image too large")
 
             image = source.convert("RGB")
