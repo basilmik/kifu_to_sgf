@@ -369,7 +369,72 @@ def _crnn_text(gray: np.ndarray) -> str:
 
     return "".join(characters)
 
+def _mnist_digit(mask: np.ndarray):
+    h, w = mask.shape
 
+    if h == 0 or w == 0:
+        raise ValueError("Empty digit image")
+
+    # Масштабируем цифру, сохраняя пропорции
+    scale = 20.0 / max(h, w)
+
+    new_w = max(1, round(w * scale))
+    new_h = max(1, round(h * scale))
+
+    scaled = cv2.resize(
+        mask,
+        (new_w, new_h),
+        interpolation=(
+            cv2.INTER_AREA
+            if scale < 1
+            else cv2.INTER_CUBIC
+        ),
+    )
+
+    # MNIST: 28x28, белая цифра на чёрном фоне
+    img = np.zeros(
+        (28, 28),
+        dtype=np.uint8,
+    )
+
+    y = (28 - new_h) // 2
+    x = (28 - new_w) // 2
+
+    img[
+        y:y + new_h,
+        x:x + new_w,
+    ] = scaled
+
+    # Запускаем ONNX-модель
+    session = _mnist_session()
+
+    input_name = session.get_inputs()[0].name
+
+    tensor = (
+        img.astype(np.float32) / 255.0
+    )[None, None, ...]
+
+    scores = session.run(
+        None,
+        {input_name: tensor},
+    )[0].reshape(-1)
+
+    if scores.size != 10:
+        raise RuntimeError(
+            f"Unexpected MNIST output: {scores.shape}"
+        )
+
+    # Преобразуем оценки классов в softmax
+    probs = np.exp(scores - scores.max())
+    probs /= probs.sum()
+
+    digit = int(probs.argmax())
+
+    return (
+        str(digit),
+        round(float(probs[digit]), 3),
+        img,
+    )
 
 def compare_digit_models(
     rectified: Image.Image,
