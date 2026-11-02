@@ -4,7 +4,8 @@ import type {
   ProcessResponse,
   RecognitionResponse,
   GridResponse,
-  OCRComparisonResponse
+  OCRComparisonResponse,
+  DigitComparisonResponse
 } from "./types";
 
 export async function processImage(file: File): Promise<ProcessResponse> {
@@ -144,4 +145,40 @@ export async function compareGridOCR(
   }
 
   return response.json() as Promise<OCRComparisonResponse>;
+}
+
+export async function compareDigitApproaches(
+  grid: GridResponse,
+  cells?: [number, number][]
+): Promise<DigitComparisonResponse> {
+  if (!grid.rectified_png_b64) {
+    throw new Error("Grid image missing");
+  }
+
+  const response = await fetch(
+    "/api/compare-digit-models",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        rectified_png_b64: grid.rectified_png_b64,
+        grid_size: grid.grid_size,
+        x_lines: grid.x_lines,
+        y_lines: grid.y_lines,
+        max_rois: 6,
+        cells: cells ?? null,
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Comparison failed (${response.status}): ` +
+      await response.text()
+    );
+  }
+
+  return response.json();
 }

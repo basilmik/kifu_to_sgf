@@ -8,6 +8,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
 from ocr_baseline import recognize_numbers, compare_ocr
+from compare_digits import compare_digit_models
 from PIL import Image
 
 from _kifu_core import detect_board, detect_board_debug, reverse, rectify_grid
@@ -389,6 +390,72 @@ async def recognize_sgf_endpoint(req: RecognizeRequest):
         )
 
         return result
+
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+class CompareDigitsRequest(BaseModel):
+    rectified_png_b64: str
+
+    grid_size: int = 19
+    x_lines: list[float]
+    y_lines: list[float]
+
+    max_rois: int = 6
+
+    # Необязательно: конкретные клетки для теста.
+    cells: list[tuple[int, int]] | None = None
+
+@app.post("/api/compare-digit-models")
+async def compare_digit_models_endpoint(
+    req: CompareDigitsRequest,
+):
+    if req.grid_size not in (9, 13, 19):
+        raise HTTPException(422, "invalid grid size")
+
+    if (
+        len(req.x_lines) != req.grid_size
+        or len(req.y_lines) != req.grid_size
+    ):
+        raise HTTPException(422, "invalid grid lines")
+
+    if not 1 <= req.max_rois <= 12:
+        raise HTTPException(422, "invalid max_rois")
+
+    if len(req.rectified_png_b64) > 20_000_000:
+        raise HTTPException(413, "image too large")
+
+    try:
+        raw = base64.b64decode(
+            req.rectified_png_b64,
+            validate=True,
+        )
+
+        with Image.open(io.BytesIO(raw)) as source:
+            if source.format != "PNG":
+                raise ValueError("expected PNG")
+
+            if max(source.size) > 4096:
+                raise ValueError("image too large")
+
+            image = source.convert("RGB")
+
+    except (ValueError, binascii.Error, OSError) as e:
+        raise HTTPException(
+            400,
+            f"invalid image: {e}",
+        )
+
+    try:
+        return await run_in_threadpool(
+            compare_digit_models,
+            image,
+            req.x_lines,
+            req.y_lines,
+            req.max_rois,
+            req.cells,
+        )
 
     except ValueError as e:
         raise HTTPException(422, str(e))

@@ -42,14 +42,31 @@ jobs:
         npm ci
         npm run build
 
+    - name: Download OCR models
+      run: |
+        set -euo pipefail
+
+        mkdir -p backend/models
+
+        curl -fL --retry 3 \
+          -o backend/models/mnist-8.onnx \
+          "https://huggingface.co/onnxmodelzoo/mnist-8/resolve/main/mnist-8.onnx"
+
+        curl -fL --retry 3 \
+          -o backend/models/text_recognition_CRNN_EN_2021sep.onnx \
+          "https://huggingface.co/opencv/text_recognition_crnn/resolve/main/text_recognition_CRNN_EN_2021sep.onnx"
+
+        test "$(stat -c%s backend/models/mnist-8.onnx)" -gt 20000
+
+        echo "a84b1f6e11a65c2d733cb0cc1f014aae3f99051e3f11447dc282faa678eee544  backend/models/text_recognition_CRNN_EN_2021sep.onnx" | sha256sum -c -
+
     - name: Copy backend to server via SSH
       uses: appleboy/scp-action@master
       with:
         host: ${{ secrets.SSH_HOST }}
         username: ${{ secrets.SSH_USER }}
         key: ${{ secrets.SSH_PRIVATE_KEY }}
-        source: "backend/main.py,backend/ocr_baseline.py,backend/pyproject.toml,backend/_kifu_core*.so"
-        target: "/var/www/kifu_to_sgf/backend"
+        source: "backend/main.py,backend/ocr_baseline.py,backend/compare_digits.py,backend/pyproject.toml,backend/_kifu_core*.so,backend/models/*.onnx"
         strip_components: 1
 
     - name: Copy frontend to server via SSH

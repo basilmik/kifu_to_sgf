@@ -1,6 +1,7 @@
 import { useEffect, useState, } from "react";
 import { b64ToDataUrl, debugDetect, 
-  detectBoard, processImage, detectGrid, recognizeGrid, compareGridOCR} from "./api";
+  detectBoard, processImage, detectGrid, 
+  recognizeGrid, compareGridOCR, compareDigitApproaches} from "./api";
 import type {
   DebugDetectResponse,
   DetectBoardResponse,
@@ -8,6 +9,7 @@ import type {
   GridResponse,
   RecognitionResponse,
   OCRComparisonResponse,
+  DigitComparisonResponse,
 } from "./types";
 
 export default function App() {
@@ -37,6 +39,15 @@ export default function App() {
 
   const [comparisonResult, setComparisonResult] = useState<OCRComparisonResponse | null>(null);
 
+  const [digitComparing, setDigitComparing] = useState(false);
+
+  const [digitComparison, setDigitComparison] =
+    useState<DigitComparisonResponse | null>(null);
+
+  // Необязательный выбор конкретного пересечения.
+  const [testRow, setTestRow] = useState("");
+  const [testCol, setTestCol] = useState("");
+
   useEffect(() => {
   if (!file) {
     setPreviewUrl(null);
@@ -58,6 +69,7 @@ export default function App() {
     setGridResult(null);
     setOcrResult(null);
     setComparisonResult(null);
+    setDigitComparison(null);
   }
 
   async function onReverse() {
@@ -92,6 +104,7 @@ export default function App() {
     setError(null);
     setOcrResult(null);
     setComparisonResult(null);
+    setDigitComparison(null);
     try {
       const result = await detectGrid(file);
       setGridResult(result);
@@ -166,6 +179,48 @@ export default function App() {
     }
   }
 
+  async function onCompareDigits() {
+    if (!gridResult?.found) return;
+
+    setDigitComparing(true);
+    setDigitComparison(null);
+    setError(null);
+
+    try {
+      let cells: [number, number][] | undefined;
+
+      if (testRow !== "" && testCol !== "") {
+        const row = Number(testRow);
+        const col = Number(testCol);
+
+        if (
+          !Number.isInteger(row) ||
+          !Number.isInteger(col) ||
+          row < 0 ||
+          col < 0 ||
+          row >= gridResult.grid_size ||
+          col >= gridResult.grid_size
+        ) {
+          throw new Error("Некорректные row/col");
+        }
+
+        cells = [[row, col]];
+      }
+
+      const result = await compareDigitApproaches(
+        gridResult,
+        cells
+      );
+
+      setDigitComparison(result);
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : String(e)
+      );
+    } finally {
+      setDigitComparing(false);
+    }
+  }
 
   return (
     <main style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
@@ -602,6 +657,131 @@ export default function App() {
                   </table>
                 </div>
               </div>
+            )}
+          </section>
+        )}
+        {gridResult?.found && (
+          <section style={{ marginTop: 24 }}>
+            <h2>MNIST vs CRNN</h2>
+
+            <p>
+              По умолчанию сравниваются 6 ROI с наибольшим
+              количеством обнаруженных штрихов.
+              Для проверки конкретной точки укажи row и col
+              (индексация с нуля).
+            </p>
+
+            <div style={{
+              display: "flex",
+              gap: 8,
+              marginBottom: 12,
+            }}>
+              <input
+                type="number"
+                placeholder="row"
+                value={testRow}
+                onChange={(e) => setTestRow(e.target.value)}
+                style={{ width: 80 }}
+              />
+
+              <input
+                type="number"
+                placeholder="col"
+                value={testCol}
+                onChange={(e) => setTestCol(e.target.value)}
+                style={{ width: 80 }}
+              />
+            </div>
+
+            <button
+              disabled={digitComparing || gridProcessing}
+              onClick={onCompareDigits}
+            >
+              {digitComparing
+                ? "Сравниваем..."
+                : "Сравнить MNIST и CRNN"}
+            </button>
+
+            {digitComparison && (
+              <>
+                <p>
+                  Время обработки:{" "}
+                  {(digitComparison.elapsed_ms / 1000).toFixed(2)} с
+                </p>
+
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{
+                    width: "100%",
+                    borderCollapse: "collapse",
+                  }}>
+                    <thead>
+                      <tr>
+                        <th style={cell}>ROI</th>
+                        <th style={cell}>Сегментация</th>
+                        <th style={cell}>MNIST</th>
+                        <th style={cell}>CRNN</th>
+                      </tr>
+                    </thead>
+
+                    <tbody>
+                      {digitComparison.comparisons.map((item) => (
+                        <tr key={`${item.row}-${item.col}`}>
+                          <td style={cell}>
+                            <img
+                              src={b64ToDataUrl(item.roi_png_b64)}
+                              alt="Original ROI"
+                              width={90}
+                            />
+                            <div>
+                              ({item.row}, {item.col})
+                            </div>
+                          </td>
+
+                          <td style={cell}>
+                            <img
+                              src={b64ToDataUrl(
+                                item.segmentation_png_b64
+                              )}
+                              alt="Segmentation"
+                              width={90}
+                            />
+                            <div style={{ display: "flex", gap: 4 }}>
+                              {item.digit_png_b64.map((png, i) => (
+                                <img
+                                  key={i}
+                                  src={b64ToDataUrl(png)}
+                                  alt={`Digit ${i}`}
+                                  width={36}
+                                  style={{ imageRendering: "pixelated" }}
+                                />
+                              ))}
+                            </div>
+                            <small>{item.mnist.status}</small>
+                          </td>
+
+                          <td style={cell}>
+                            <b>{item.mnist.text ?? "—"}</b>
+                            <div>
+                              {item.mnist.confidence_per_digit
+                                .map((v) => v.toFixed(2))
+                                .join(", ")}
+                            </div>
+                          </td>
+
+                          <td style={cell}>
+                            <b>{item.crnn.text || "—"}</b>
+                            <div>
+                              {item.crnn.valid_number
+                                ? "Числовая строка"
+                                : "Не число / пусто"}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
           </section>
         )}

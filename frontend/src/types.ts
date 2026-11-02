@@ -105,3 +105,29 @@ export interface OCRComparisonResponse {
   inspected_cells: number;
   ocr_attempts: number;
 }
+
+export interface DigitComparison {
+  row: number;
+  col: number;
+  ink_score: number;
+
+  roi_png_b64: string;
+  segmentation_png_b64: string;
+  digit_png_b64: string[];
+
+  mnist: {
+    text: string | null;
+    confidence_per_digit: number[];
+    status: string;
+  };
+
+  crnn: {
+    text: string;
+    valid_number: boolean;
+  };
+}
+
+export interface DigitComparisonResponse {
+  comparisons: DigitComparison[];
+  elapsed_ms: number;
+}
