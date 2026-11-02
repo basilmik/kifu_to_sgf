@@ -4,6 +4,7 @@ import type {
   ProcessResponse,
   RecognitionResponse,
   GridResponse,
+  OCRComparisonResponse
 } from "./types";
 
 export async function processImage(file: File): Promise<ProcessResponse> {
@@ -105,4 +106,42 @@ export async function recognizeGrid(
   }
 
   return response.json() as Promise<RecognitionResponse>;
+}
+
+export async function compareGridOCR(
+  grid: GridResponse
+): Promise<OCRComparisonResponse> {
+  if (!grid.rectified_png_b64) {
+    throw new Error("Нет выпрямленного изображения");
+  }
+
+  const response = await fetch(
+    "/api/recognize-sgf",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        rectified_png_b64: grid.rectified_png_b64,
+        grid_size: grid.grid_size,
+        x_lines: grid.x_lines,
+        y_lines: grid.y_lines,
+        max_move: 500,
+
+        compare_models: true,
+        max_rois: 100,
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+
+    throw new Error(
+      `OCR comparison failed (${response.status}): ${text}`
+    );
+  }
+
+  return response.json() as Promise<OCRComparisonResponse>;
 }

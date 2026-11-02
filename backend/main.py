@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from fastapi import FastAPI, File, HTTPException, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
-from ocr_baseline import recognize_numbers
+from ocr_baseline import compare_ocr
 from PIL import Image
 
 from _kifu_core import detect_board, detect_board_debug, reverse, rectify_grid

@@ -1,12 +1,13 @@
 import { useEffect, useState, } from "react";
 import { b64ToDataUrl, debugDetect, 
-  detectBoard, processImage, detectGrid, recognizeGrid} from "./api";
+  detectBoard, processImage, detectGrid, recognizeGrid, compareGridOCR} from "./api";
 import type {
   DebugDetectResponse,
   DetectBoardResponse,
   ProcessResponse,
   GridResponse,
   RecognitionResponse,
+  OCRComparisonResponse,
 } from "./types";
 
 export default function App() {
@@ -31,6 +32,10 @@ export default function App() {
 
   const [ocrResult, setOcrResult] =
     useState<RecognitionResponse | null>(null);
+  
+  const [comparing, setComparing] = useState(false);
+
+  const [comparisonResult, setComparisonResult] = useState<OCRComparisonResponse | null>(null);
 
   useEffect(() => {
   if (!file) {
@@ -52,6 +57,7 @@ export default function App() {
     setError(null);
     setGridResult(null);
     setOcrResult(null);
+    setComparisonResult(null);
   }
 
   async function onReverse() {
@@ -85,6 +91,7 @@ export default function App() {
     setGridResult(null);
     setError(null);
     setOcrResult(null);
+    setComparisonResult(null);
     try {
       const result = await detectGrid(file);
       setGridResult(result);
@@ -139,6 +146,26 @@ export default function App() {
       URL.revokeObjectURL(url);
     }, 1000);
   }
+
+  async function onCompareOCR() {
+    if (!gridResult?.found) return;
+
+    setComparing(true);
+    setComparisonResult(null);
+    setError(null);
+
+    try {
+      const result = await compareGridOCR(gridResult);
+      setComparisonResult(result);
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : String(e)
+      );
+    } finally {
+      setComparing(false);
+    }
+  }
+
 
   return (
     <main style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
@@ -462,6 +489,118 @@ export default function App() {
                     ))}
                   </tbody>
                 </table>
+              </div>
+            )}
+          </section>
+        )}
+
+        {gridResult?.found && (
+          <section
+            style={{
+              marginTop: 24,
+              paddingTop: 16,
+              borderTop: "2px solid #ddd",
+            }}
+          >
+            <h2>Сравнение OCR-моделей</h2>
+
+            <button
+              onClick={onCompareOCR}
+              disabled={comparing || gridProcessing}
+            >
+              {comparing
+                ? "Сравниваем модели..."
+                : "Сравнить Tesseract и PaddleOCR"}
+            </button>
+
+            {comparisonResult && (
+              <div style={{ marginTop: 20 }}>
+                <p>
+                  Проверено пересечений:{" "}
+                  {comparisonResult.inspected_cells}
+                  <br />
+                  Передано в OCR:{" "}
+                  {comparisonResult.ocr_attempts}
+                </p>
+
+                <p style={{ color: "#666" }}>
+                  Сравниваются одни и те же фрагменты.
+                  Результаты пока не используются для SGF.
+                </p>
+
+                <div style={{ overflowX: "auto" }}>
+                  <table
+                    style={{
+                      borderCollapse: "collapse",
+                      width: "100%",
+                    }}
+                  >
+                    <thead>
+                      <tr>
+                        <th style={cell}>ROI</th>
+                        <th style={cell}>Позиция</th>
+                        <th style={cell}>Tesseract</th>
+                        <th style={cell}>PaddleOCR</th>
+                      </tr>
+                    </thead>
+
+                    <tbody>
+                      {comparisonResult.comparisons.map(
+                        (item) => {
+                          const different =
+                            item.tesseract.text !==
+                            item.paddle.text;
+
+                          return (
+                            <tr
+                              key={`${item.row}-${item.col}`}
+                              style={{
+                                background: different
+                                  ? "#fff5e6"
+                                  : "transparent",
+                              }}
+                            >
+                              <td style={cell}>
+                                <img
+                                  src={b64ToDataUrl(
+                                    item.roi_png_b64
+                                  )}
+                                  alt="OCR crop"
+                                  style={{
+                                    width: 90,
+                                    maxWidth: "none",
+                                  }}
+                                />
+                              </td>
+
+                              <td style={cell}>
+                                ({item.row}, {item.col})
+                              </td>
+
+                              <td style={cell}>
+                                <b>
+                                  {item.tesseract.text || "—"}
+                                </b>
+                                <div>
+                                  {item.tesseract.confidence.toFixed(1)}
+                                </div>
+                              </td>
+
+                              <td style={cell}>
+                                <b>
+                                  {item.paddle.text || "—"}
+                                </b>
+                                <div>
+                                  {item.paddle.confidence.toFixed(1)}
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        }
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             )}
           </section>

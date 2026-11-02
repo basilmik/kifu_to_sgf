@@ -83,3 +83,25 @@ export interface RecognitionResponse {
 
   warnings: string[];
 }
+
+export interface OCRPrediction {
+  text: string;
+  confidence: number;
+}
+
+export interface OCRComparison {
+  row: number;
+  col: number;
+  ink_score: number;
+
+  roi_png_b64: string;
+
+  tesseract: OCRPrediction;
+  paddle: OCRPrediction;
+}
+
+export interface OCRComparisonResponse {
+  comparisons: OCRComparison[];
+  inspected_cells: number;
+  ocr_attempts: number;
+}
