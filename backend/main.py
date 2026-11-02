@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from fastapi import FastAPI, File, HTTPException, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
-from ocr_baseline import compare_ocr
+from ocr_baseline import recognize_numbers, compare_ocr
 from PIL import Image
 
 from _kifu_core import detect_board, detect_board_debug, reverse, rectify_grid
@@ -299,13 +299,12 @@ async def grid_endpoint(
 
 class RecognizeRequest(BaseModel):
     rectified_png_b64: str
-
     grid_size: int = 19
-
     x_lines: list[float]
     y_lines: list[float]
-
     max_move: int = 500
+    compare_models: bool = False
+    max_rois: int = 100
 
 @app.post("/api/recognize-sgf")
 async def recognize_sgf_endpoint(req: RecognizeRequest):
@@ -366,12 +365,27 @@ async def recognize_sgf_endpoint(req: RecognizeRequest):
     try:
         # OCR может выполняться заметное время.
         # Выносим синхронную работу из event loop.
+        if req.compare_models:
+            if not 1 <= req.max_rois <= req.grid_size ** 2:
+                raise HTTPException(
+                    422,
+                    "invalid max_rois"
+                )
+
+            return await run_in_threadpool(
+                compare_ocr,
+                image,
+                req.x_lines,
+                req.y_lines,
+                req.max_rois,
+            )
+
         result = await run_in_threadpool(
             recognize_numbers,
             image,
             req.x_lines,
             req.y_lines,
-            req.max_move
+            req.max_move,
         )
 
         return result

@@ -51,240 +51,240 @@ def paddle_recognize_batch(crops):
 
         return output
 
-    def tesseract_recognize(crop):
-        data = pytesseract.image_to_data(
-            crop,
-            config=(
-                "--oem 1 --psm 7 "
-                "-c tessedit_char_whitelist=0123456789"
-            ),
-            output_type=Output.DICT,
-            timeout=4,
-        )
+def tesseract_recognize(crop):
+    data = pytesseract.image_to_data(
+        crop,
+        config=(
+            "--oem 1 --psm 7 "
+            "-c tessedit_char_whitelist=0123456789"
+        ),
+        output_type=Output.DICT,
+        timeout=4,
+    )
 
-        words = []
-        scores = []
+    words = []
+    scores = []
 
-        for text, confidence in zip(
-            data["text"],
-            data["conf"],
-        ):
-            text = str(text).strip()
-            confidence = float(confidence)
+    for text, confidence in zip(
+        data["text"],
+        data["conf"],
+    ):
+        text = str(text).strip()
+        confidence = float(confidence)
 
-            if text and confidence >= 0:
-                words.append(text)
-                scores.append(confidence)
+        if text and confidence >= 0:
+            words.append(text)
+            scores.append(confidence)
 
-        return {
-            "text": "".join(words),
-            "confidence": (
-                round(min(scores), 1)
-                if scores else 0.0
-            ),
-        }
+    return {
+        "text": "".join(words),
+        "confidence": (
+            round(min(scores), 1)
+            if scores else 0.0
+        ),
+    }
 
-    def compare_ocr(
-        rectified: Image.Image,
-        x_lines: list[float],
-        y_lines: list[float],
-        max_rois: int = 100,
-    ) -> dict:
-        grid_size = len(x_lines)
+def compare_ocr(
+    rectified: Image.Image,
+    x_lines: list[float],
+    y_lines: list[float],
+    max_rois: int = 100,
+) -> dict:
+    grid_size = len(x_lines)
 
-        if grid_size not in (9, 13, 19):
-            raise ValueError("unsupported grid size")
+    if grid_size not in (9, 13, 19):
+        raise ValueError("unsupported grid size")
 
-        if len(y_lines) != grid_size:
-            raise ValueError("invalid grid lines")
+    if len(y_lines) != grid_size:
+        raise ValueError("invalid grid lines")
 
-        if not 1 <= max_rois <= grid_size * grid_size:
-            raise ValueError("invalid max_rois")
+    if not 1 <= max_rois <= grid_size * grid_size:
+        raise ValueError("invalid max_rois")
 
-        gray = cv2.cvtColor(
-            np.asarray(rectified.convert("RGB")),
-            cv2.COLOR_RGB2GRAY,
-        )
+    gray = cv2.cvtColor(
+        np.asarray(rectified.convert("RGB")),
+        cv2.COLOR_RGB2GRAY,
+    )
 
-        h, w = gray.shape
+    h, w = gray.shape
 
-        dx = float(np.median(np.diff(x_lines)))
-        dy = float(np.median(np.diff(y_lines)))
+    dx = float(np.median(np.diff(x_lines)))
+    dy = float(np.median(np.diff(y_lines)))
 
-        if dx <= 0 or dy <= 0:
-            raise ValueError("invalid grid spacing")
+    if dx <= 0 or dy <= 0:
+        raise ValueError("invalid grid spacing")
 
-        pitch = min(dx, dy)
-        radius = max(8, round(pitch * 0.48))
+    pitch = min(dx, dy)
+    radius = max(8, round(pitch * 0.48))
 
-        # Маска используется только для определения
-        # интересных областей, но НЕ передаётся в OCR.
-        binary = cv2.adaptiveThreshold(
-            gray,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV,
-            31,
-            12,
-        )
+    # Маска используется только для определения
+    # интересных областей, но НЕ передаётся в OCR.
+    binary = cv2.adaptiveThreshold(
+        gray,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV,
+        31,
+        12,
+    )
 
-        kernel_len = max(9, round(pitch * 0.75))
+    kernel_len = max(9, round(pitch * 0.75))
 
-        vertical = cv2.morphologyEx(
-            binary,
-            cv2.MORPH_OPEN,
-            cv2.getStructuringElement(
-                cv2.MORPH_RECT,
-                (1, kernel_len),
-            ),
-        )
+    vertical = cv2.morphologyEx(
+        binary,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(
+            cv2.MORPH_RECT,
+            (1, kernel_len),
+        ),
+    )
 
-        horizontal = cv2.morphologyEx(
-            binary,
-            cv2.MORPH_OPEN,
-            cv2.getStructuringElement(
-                cv2.MORPH_RECT,
-                (kernel_len, 1),
-            ),
-        )
+    horizontal = cv2.morphologyEx(
+        binary,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(
+            cv2.MORPH_RECT,
+            (kernel_len, 1),
+        ),
+    )
 
-        mask = cv2.subtract(
-            binary,
-            cv2.bitwise_or(vertical, horizontal),
-        )
+    mask = cv2.subtract(
+        binary,
+        cv2.bitwise_or(vertical, horizontal),
+    )
 
-        proposals = []
+    proposals = []
 
-        # 1. Собираем области вокруг всех пересечений.
-        for row, y in enumerate(y_lines):
-            for col, x in enumerate(x_lines):
-                cx, cy = round(x), round(y)
+    # 1. Собираем области вокруг всех пересечений.
+    for row, y in enumerate(y_lines):
+        for col, x in enumerate(x_lines):
+            cx, cy = round(x), round(y)
 
-                x1 = max(0, cx - radius)
-                y1 = max(0, cy - radius)
+            x1 = max(0, cx - radius)
+            y1 = max(0, cy - radius)
 
-                x2 = min(w, cx + radius + 1)
-                y2 = min(h, cy + radius + 1)
+            x2 = min(w, cx + radius + 1)
+            y2 = min(h, cy + radius + 1)
 
-                roi = gray[y1:y2, x1:x2].copy()
-                roi_mask = mask[y1:y2, x1:x2]
+            roi = gray[y1:y2, x1:x2].copy()
+            roi_mask = mask[y1:y2, x1:x2]
 
-                if roi.size == 0:
-                    continue
+            if roi.size == 0:
+                continue
 
-                # Сколько пикселей осталось после
-                # предполагаемого удаления сетки.
-                ink_score = (
-                    cv2.countNonZero(roi_mask)
-                    / roi_mask.size
-                )
-
-                # Для ОБЕИХ моделей одинаково увеличиваем
-                # исходный ROI и добавляем белое поле.
-                # Штрихи сетки при этом не удаляются.
-                crop = cv2.resize(
-                    roi,
-                    None,
-                    fx=3,
-                    fy=3,
-                    interpolation=cv2.INTER_CUBIC,
-                )
-
-                crop = cv2.copyMakeBorder(
-                    crop,
-                    15, 15, 15, 15,
-                    cv2.BORDER_CONSTANT,
-                    value=255,
-                )
-
-                proposals.append({
-                    "row": row,
-                    "col": col,
-                    "ink_score": ink_score,
-                    "crop": crop,
-                })
-
-        # 2. Для первого эксперимента ограничиваем
-        # число ROI, иначе Tesseract может работать долго.
-        #
-        # Отбираем области с наибольшим остатком чернил.
-        proposals.sort(
-            key=lambda p: p["ink_score"],
-            reverse=True,
-        )
-
-        selected = proposals[:max_rois]
-
-        if not selected:
-            return {
-                "comparisons": [],
-                "inspected_cells": grid_size * grid_size,
-                "ocr_attempts": 0,
-            }
-
-        # 3. PaddleOCR получает те же исходные ROI,
-        # что и Tesseract.
-        # Преобразование grayscale -> BGR меняет
-        # формат каналов, но не содержимое картинки.
-        paddle_crops = [
-            cv2.cvtColor(
-                p["crop"],
-                cv2.COLOR_GRAY2BGR,
-            )
-            for p in selected
-        ]
-
-        paddle_results = paddle_recognize_batch(
-            paddle_crops
-        )
-
-        if len(paddle_results) != len(selected):
-            raise RuntimeError(
-                "PaddleOCR result count mismatch"
+            # Сколько пикселей осталось после
+            # предполагаемого удаления сетки.
+            ink_score = (
+                cv2.countNonZero(roi_mask)
+                / roi_mask.size
             )
 
-        # 4. Tesseract запускается на этих же фрагментах.
-        comparisons = []
+            # Для ОБЕИХ моделей одинаково увеличиваем
+            # исходный ROI и добавляем белое поле.
+            # Штрихи сетки при этом не удаляются.
+            crop = cv2.resize(
+                roi,
+                None,
+                fx=3,
+                fy=3,
+                interpolation=cv2.INTER_CUBIC,
+            )
 
-        for item, paddle_result in zip(
-            selected,
-            paddle_results,
-        ):
-            crop = item["crop"]
+            crop = cv2.copyMakeBorder(
+                crop,
+                15, 15, 15, 15,
+                cv2.BORDER_CONSTANT,
+                value=255,
+            )
 
-            tesseract_result = tesseract_recognize(crop)
-
-            # Отдаём сам ROI на фронтенд для диагностики.
-            ok, png = cv2.imencode(".png", crop)
-
-            if not ok:
-                raise RuntimeError("cannot encode ROI")
-
-            comparisons.append({
-                "row": item["row"],
-                "col": item["col"],
-                "ink_score": round(
-                    item["ink_score"], 4
-                ),
-                "roi_png_b64": base64.b64encode(
-                    png.tobytes()
-                ).decode("ascii"),
-                "tesseract": tesseract_result,
-                "paddle": paddle_result,
+            proposals.append({
+                "row": row,
+                "col": col,
+                "ink_score": ink_score,
+                "crop": crop,
             })
 
-        comparisons.sort(
-            key=lambda item: (
-                item["row"],
-                item["col"],
-            )
+    # 2. Для первого эксперимента ограничиваем
+    # число ROI, иначе Tesseract может работать долго.
+    #
+    # Отбираем области с наибольшим остатком чернил.
+    proposals.sort(
+        key=lambda p: p["ink_score"],
+        reverse=True,
+    )
+
+    selected = proposals[:max_rois]
+
+    if not selected:
+        return {
+            "comparisons": [],
+            "inspected_cells": grid_size * grid_size,
+            "ocr_attempts": 0,
+        }
+
+    # 3. PaddleOCR получает те же исходные ROI,
+    # что и Tesseract.
+    # Преобразование grayscale -> BGR меняет
+    # формат каналов, но не содержимое картинки.
+    paddle_crops = [
+        cv2.cvtColor(
+            p["crop"],
+            cv2.COLOR_GRAY2BGR,
+        )
+        for p in selected
+    ]
+
+    paddle_results = paddle_recognize_batch(
+        paddle_crops
+    )
+
+    if len(paddle_results) != len(selected):
+        raise RuntimeError(
+            "PaddleOCR result count mismatch"
         )
 
-        return {
-            "comparisons": comparisons,
-            "inspected_cells": grid_size * grid_size,
-            "ocr_attempts": len(comparisons),
-        }
+    # 4. Tesseract запускается на этих же фрагментах.
+    comparisons = []
+
+    for item, paddle_result in zip(
+        selected,
+        paddle_results,
+    ):
+        crop = item["crop"]
+
+        tesseract_result = tesseract_recognize(crop)
+
+        # Отдаём сам ROI на фронтенд для диагностики.
+        ok, png = cv2.imencode(".png", crop)
+
+        if not ok:
+            raise RuntimeError("cannot encode ROI")
+
+        comparisons.append({
+            "row": item["row"],
+            "col": item["col"],
+            "ink_score": round(
+                item["ink_score"], 4
+            ),
+            "roi_png_b64": base64.b64encode(
+                png.tobytes()
+            ).decode("ascii"),
+            "tesseract": tesseract_result,
+            "paddle": paddle_result,
+        })
+
+    comparisons.sort(
+        key=lambda item: (
+            item["row"],
+            item["col"],
+        )
+    )
+
+    return {
+        "comparisons": comparisons,
+        "inspected_cells": grid_size * grid_size,
+        "ocr_attempts": len(comparisons),
+    }
 
 def recognize_numbers(
     rectified: Image.Image,
