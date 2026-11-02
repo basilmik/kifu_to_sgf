@@ -1,8 +1,13 @@
 import base64
 import io
 
+import binascii
+
+from pydantic import BaseModel
 from fastapi import FastAPI, File, HTTPException, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.concurrency import run_in_threadpool
+from ocr_baseline import recognize_numbers
 from PIL import Image
 
 from _kifu_core import detect_board, detect_board_debug, reverse, rectify_grid
@@ -290,3 +295,86 @@ async def grid_endpoint(
         "x_quality": result["x_quality"],
         "y_quality": result["y_quality"]
     }
+
+
+class RecognizeRequest(BaseModel):
+    rectified_png_b64: str
+
+    grid_size: int = 19
+
+    x_lines: list[float]
+    y_lines: list[float]
+
+    max_move: int = 500
+
+@app.post("/api/recognize-sgf")
+async def recognize_sgf_endpoint(req: RecognizeRequest):
+
+    if req.grid_size not in (9, 13, 19):
+        raise HTTPException(
+            422,
+            "unsupported grid size"
+        )
+
+    if (
+        len(req.x_lines) != req.grid_size
+        or len(req.y_lines) != req.grid_size
+    ):
+        raise HTTPException(
+            422,
+            "invalid grid line count"
+        )
+
+    if not 1 <= req.max_move <= 2000:
+        raise HTTPException(
+            422,
+            "invalid max_move"
+        )
+
+    # Ограничиваем размер входного base64.
+    if len(req.rectified_png_b64) > 20_000_000:
+        raise HTTPException(
+            413,
+            "image payload too large"
+        )
+
+    try:
+        raw = base64.b64decode(
+            req.rectified_png_b64,
+            validate=True
+        )
+
+        with Image.open(io.BytesIO(raw)) as source:
+            if source.format != "PNG":
+                raise ValueError("expected PNG image")
+
+            if max(source.size) > 4096:
+                raise ValueError("image is too large")
+
+            image = source.convert("RGB")
+
+    except (
+        ValueError,
+        binascii.Error,
+        OSError,
+    ) as e:
+        raise HTTPException(
+            400,
+            f"invalid image: {e}"
+        )
+
+    try:
+        # OCR может выполняться заметное время.
+        # Выносим синхронную работу из event loop.
+        result = await run_in_threadpool(
+            recognize_numbers,
+            image,
+            req.x_lines,
+            req.y_lines,
+            req.max_move
+        )
+
+        return result
+
+    except ValueError as e:
+        raise HTTPException(422, str(e))

@@ -1,10 +1,12 @@
 import { useEffect, useState, } from "react";
-import { b64ToDataUrl, debugDetect, detectBoard, processImage, detectGrid, } from "./api";
+import { b64ToDataUrl, debugDetect, 
+  detectBoard, processImage, detectGrid, recognizeGrid} from "./api";
 import type {
   DebugDetectResponse,
   DetectBoardResponse,
   ProcessResponse,
   GridResponse,
+  RecognitionResponse,
 } from "./types";
 
 export default function App() {
@@ -25,6 +27,11 @@ export default function App() {
 
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
+  const [ocrProcessing, setOcrProcessing] = useState(false);
+
+  const [ocrResult, setOcrResult] =
+    useState<RecognitionResponse | null>(null);
+
   useEffect(() => {
   if (!file) {
     setPreviewUrl(null);
@@ -44,6 +51,7 @@ export default function App() {
     setDebugResult(null);
     setError(null);
     setGridResult(null);
+    setOcrResult(null);
   }
 
   async function onReverse() {
@@ -76,7 +84,7 @@ export default function App() {
     setGridProcessing(true);
     setGridResult(null);
     setError(null);
-
+    setOcrResult(null);
     try {
       const result = await detectGrid(file);
       setGridResult(result);
@@ -87,6 +95,49 @@ export default function App() {
     } finally {
       setGridProcessing(false);
     }
+  }
+
+  async function onRecognize() {
+    if (!gridResult?.found) return;
+
+    setOcrProcessing(true);
+    setOcrResult(null);
+    setError(null);
+
+    try {
+      const result = await recognizeGrid(gridResult);
+      setOcrResult(result);
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : String(e)
+      );
+    } finally {
+      setOcrProcessing(false);
+    }
+  }
+
+  function downloadSgf(sgf: string) {
+    const blob = new Blob(
+      [sgf],
+      {
+        type: "application/x-go-sgf;charset=utf-8",
+      }
+    );
+
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = "recognized-game.sgf";
+
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+
+    window.setTimeout(() => {
+      URL.revokeObjectURL(url);
+    }, 1000);
   }
 
   return (
@@ -287,6 +338,28 @@ export default function App() {
                         strokeOpacity={0.8}
                       />
                     ))}
+                    {/* Распознанные номера поверх сетки */}
+                    {ocrResult?.candidates.map((move, index) => {
+                      const x = gridResult.x_lines[move.col];
+                      const y = gridResult.y_lines[move.row];
+
+                      return (
+                        <g key={index} pointerEvents="none">
+                          <text
+                            x={x + 8}
+                            y={y - 8}
+                            fontSize={20}
+                            fontWeight="bold"
+                            fill={move.confidence >= 70 ? "#00a000" : "red"}
+                            stroke="white"
+                            strokeWidth={3}
+                            paintOrder="stroke"
+                          >
+                            {move.number}
+                          </text>
+                        </g>
+                      );
+                    })}
                   </svg>
                 </figure>
               )}
@@ -294,6 +367,107 @@ export default function App() {
           </div>
         )}
       </section>
+        {gridResult?.found && gridResult.rectified_png_b64 && (
+          <section
+            style={{
+              marginTop: 24,
+              borderTop: "2px solid #ddd",
+              paddingTop: 16,
+            }}
+          >
+            <h2>Распознавание ходов</h2>
+
+            <button
+              onClick={onRecognize}
+              disabled={ocrProcessing || gridProcessing}
+            >
+              {ocrProcessing
+                ? "Распознаём числа..."
+                : "Распознать числа → SGF"}
+            </button>
+
+            {ocrResult && (
+              <div style={{ marginTop: 20 }}>
+
+                <p>
+                  <b>Всего пересечений:</b>{" "}
+                  {ocrResult.inspected_cells}
+                  <br />
+
+                  <b>OCR-вызовов:</b>{" "}
+                  {ocrResult.ocr_attempts}
+                  <br />
+
+                  <b>Распознано чисел:</b>{" "}
+                  {ocrResult.candidates.length}
+                  <br />
+
+                  <b>Ходов экспортировано:</b>{" "}
+                  {ocrResult.exported_moves.length}
+                </p>
+
+                {ocrResult.warnings.length > 0 && (
+                  <div style={{ color: "darkorange" }}>
+                    <h3>Предупреждения</h3>
+
+                    {ocrResult.warnings.map((warning, i) => (
+                      <p key={i}>{warning}</p>
+                    ))}
+                  </div>
+                )}
+
+                {ocrResult.sgf && (
+                  <button
+                    onClick={() => downloadSgf(ocrResult.sgf!)}
+                  >
+                    Скачать SGF
+                  </button>
+                )}
+
+                {!ocrResult.sgf && (
+                  <p>
+                    SGF пока не сформирован:
+                    не удалось восстановить начало партии.
+                  </p>
+                )}
+
+                <h3>Распознанные числа</h3>
+
+                <table
+                  style={{
+                    borderCollapse: "collapse",
+                    width: "100%",
+                    maxWidth: 600,
+                  }}
+                >
+                  <thead>
+                    <tr>
+                      <th style={cell}>Ход</th>
+                      <th style={cell}>Строка</th>
+                      <th style={cell}>Столбец</th>
+                      <th style={cell}>Confidence</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {ocrResult.candidates.map((move, i) => (
+                      <tr key={i}>
+                        <td style={cell}>{move.number}</td>
+                        <td style={cell}>{move.row}</td>
+                        <td style={cell}>{move.col}</td>
+                        <td style={cell}>
+                          {move.confidence.toFixed(1)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        )}
+
+
       {debugResult && (
         <section style={{ marginTop: 24, borderTop: "2px solid #ddd", paddingTop: 16 }}>
           <h2>Debug</h2>

@@ -63,3 +63,23 @@ export interface GridResponse {
   x_quality: number;
   y_quality: number;
 }
+
+export interface RecognizedMove {
+  number: number;
+  row: number;
+  col: number;
+  confidence: number;
+}
+
+export interface RecognitionResponse {
+  candidates: RecognizedMove[];
+
+  inspected_cells: number;
+  ocr_attempts: number;
+
+  exported_moves: RecognizedMove[];
+
+  sgf: string | null;
+
+  warnings: string[];
+}

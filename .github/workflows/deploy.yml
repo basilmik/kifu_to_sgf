@@ -48,7 +48,7 @@ jobs:
         host: ${{ secrets.SSH_HOST }}
         username: ${{ secrets.SSH_USER }}
         key: ${{ secrets.SSH_PRIVATE_KEY }}
-        source: "backend/main.py,backend/pyproject.toml,backend/_kifu_core*.so"
+        source: "backend/main.py,backend/ocr_baseline.py,backend/pyproject.toml,backend/_kifu_core*.so"
         target: "/var/www/kifu_to_sgf/backend"
         strip_components: 1
 
@@ -71,7 +71,12 @@ jobs:
         script: |
           set -e
           apt-get update
-          apt-get install -y libopencv-dev
+          apt-get install -y \ 
+            libopencv-dev \
+            tesseract-ocr \
+            tesseract-ocr-eng
+
+          tesseract --version
 
     - name: Install Python deps on server
       uses: appleboy/ssh-action@master

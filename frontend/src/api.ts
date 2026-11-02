@@ -2,6 +2,7 @@ import type {
   DebugDetectResponse,
   DetectBoardResponse,
   ProcessResponse,
+  RecognitionResponse,
   GridResponse,
 } from "./types";
 
@@ -63,4 +64,45 @@ export async function detectGrid(
   }
 
   return response.json() as Promise<GridResponse>;
+}
+
+export async function recognizeGrid(
+  grid: GridResponse
+): Promise<RecognitionResponse> {
+
+  if (!grid.rectified_png_b64) {
+    throw new Error("Нет выпрямленного изображения");
+  }
+
+  const response = await fetch(
+    "/api/recognize-sgf",
+    {
+      method: "POST",
+
+      headers: {
+        "Content-Type": "application/json",
+      },
+
+      body: JSON.stringify({
+        rectified_png_b64: grid.rectified_png_b64,
+
+        grid_size: grid.grid_size,
+
+        x_lines: grid.x_lines,
+        y_lines: grid.y_lines,
+
+        max_move: 500,
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const text = await response.text();
+
+    throw new Error(
+      `Recognition failed (${response.status}): ${text}`
+    );
+  }
+
+  return response.json() as Promise<RecognitionResponse>;
 }
