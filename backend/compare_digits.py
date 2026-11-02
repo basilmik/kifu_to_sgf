@@ -190,6 +190,48 @@ def _mask_and_digits(
 
     return cleaned, digits, "ok"
 
+def make_soft_ink(
+    gray: np.ndarray,
+    gamma: float = 1.5,
+    low: float = 8.0,
+    high: float = 125.0,
+) -> np.ndarray:
+    """
+    Преобразует grayscale в мягкую маску чернил.
+
+    Выход:
+        0   = фон
+        255 = самый тёмный штрих
+
+    Сохраняет промежуточные оттенки.
+    """
+
+    image = gray.astype(np.float32)
+
+    # Яркость бумаги оцениваем по светлым
+    # пикселям самого ROI.
+    paper = float(np.percentile(image, 90))
+
+    # Насколько каждый пиксель темнее бумаги.
+    darkness = np.maximum(
+        paper - image,
+        0.0,
+    )
+
+    # Небольшое подавление слабых оттенков.
+    strength = np.clip(
+        (darkness - low) / (high - low),
+        0.0,
+        1.0,
+    )
+
+    # Усиливаем различие между светлыми
+    # линиями и тёмными цифрами.
+    strength = np.power(strength, gamma)
+
+    return np.round(
+        strength * 255
+    ).astype(np.uint8)
 
 def _mask_and_digits(
     gray: np.ndarray,
@@ -199,11 +241,18 @@ def _mask_and_digits(
 ):
     # 1. Бинаризация без удаления линий.
     # Белые пиксели = тёмные элементы изображения.
-    _, mask = cv2.threshold(
+    # _, mask = cv2.threshold(
+    #     gray,
+    #     0,
+    #     255,
+    #     cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU,
+    # )
+
+    mask = make_soft_ink(
         gray,
-        0,
-        255,
-        cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU,
+        gamma=1.5,
+        low=8.0,
+        high=125.0,
     )
 
     h, w = mask.shape
@@ -226,8 +275,13 @@ def _mask_and_digits(
     if not projection_rows.any():
         return mask, [], "invalid_roi"
 
+    # projection = np.count_nonzero(
+    #     mask[projection_rows, :],
+    #     axis=0,
+    # )
+
     projection = np.count_nonzero(
-        mask[projection_rows, :],
+        mask[projection_rows, :] >= 90,
         axis=0,
     )
 
