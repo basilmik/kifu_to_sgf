@@ -197,129 +197,97 @@ def _mask_and_digits(
     cy: int,
     pitch: float,
 ):
-    blurred = cv2.GaussianBlur(
-        gray, (3, 3), 0
-    )
-
+    # 1. Бинаризация без удаления линий.
+    # Белые пиксели = тёмные элементы изображения.
     _, mask = cv2.threshold(
-        blurred,
+        gray,
         0,
         255,
         cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU,
     )
 
-    # Удаляем предполагаемые линии сетки.
-    # Только в ветке сегментации: исходный ROI
-    # для CRNN не изменяем.
-    line_width = max(
-        1, int(round(pitch * 0.025))
+    h, w = mask.shape
+
+    # 2. Вертикальная проекция.
+    #
+    # Центральную горизонтальную линию не учитываем
+    # только при расчёте проекции.
+    # В самом изображении она остаётся!
+
+    band = max(1, round(pitch * 0.035))
+
+    projection_rows = np.ones(h, dtype=bool)
+
+    projection_rows[
+        max(0, cy - band):
+        min(h, cy + band + 1)
+    ] = False
+
+    if not projection_rows.any():
+        return mask, [], "invalid_roi"
+
+    projection = np.count_nonzero(
+        mask[projection_rows, :],
+        axis=0,
     )
 
-    cv2.line(
-        mask,
-        (cx, 0),
-        (cx, mask.shape[0] - 1),
-        0,
-        line_width,
+    # 3. Определяем столбцы со штрихами.
+    min_signal = max(
+        2,
+        round(projection_rows.sum() * 0.05),
     )
 
-    cv2.line(
-        mask,
-        (0, cy),
-        (mask.shape[1] - 1, cy),
-        0,
-        line_width,
+    occupied = projection >= min_signal
+
+    # 4. Находим непрерывные группы столбцов.
+    padded = np.pad(
+        occupied.astype(np.int8),
+        (1, 1),
     )
 
-    # Частично соединяем разорванные штрихи.
-    mask = cv2.morphologyEx(
-        mask,
-        cv2.MORPH_CLOSE,
-        np.ones((2, 2), np.uint8),
+    transitions = np.diff(padded)
+
+    starts = np.where(transitions == 1)[0]
+    ends = np.where(transitions == -1)[0]
+
+    min_width = max(
+        2,
+        round(pitch * 0.035),
     )
 
-    # Убираем мелкий шум.
-    count, labels, stats, _ = (
-        cv2.connectedComponentsWithStats(mask, 8)
-    )
-
-    cleaned = np.zeros_like(mask)
-
-    min_area = max(
-        4, int(pitch * pitch * 0.002)
-    )
-
-    for i in range(1, count):
-        x, y, w, h, area = stats[i]
-
-        if (
-            area >= min_area
-            and h >= 4
-            and w <= mask.shape[1] * 0.95
-        ):
-            cleaned[labels == i] = 255
-
-    ys, xs = np.where(cleaned > 0)
-
-    if not len(xs):
-        return cleaned, [], "blank"
-
-    min_x = int(xs.min())
-    max_x = int(xs.max()) + 1
-
-    min_y = int(ys.min())
-    max_y = int(ys.max()) + 1
-
-    tight = cleaned[
-        min_y:max_y,
-        min_x:max_x,
+    runs = [
+        (int(a), int(b))
+        for a, b in zip(starts, ends)
+        if b - a >= min_width
     ]
 
-    # Вертикальная проекция.
-    occupied = np.any(
-        tight > 0, axis=0
-    ).astype(np.int8)
+    # 5. Проверяем, получилось ли разделение.
+    if len(runs) == 0:
+        return mask, [], "blank_or_uncertain"
 
-    padded = np.pad(occupied, (1, 1))
+    if len(runs) > 3:
+        return mask, [], f"uncertain_split:{len(runs)}"
 
-    starts = np.where(
-        np.diff(padded) == 1
-    )[0]
+    # Очень широкая единая группа может означать,
+    # что несколько цифр касаются друг друга.
+    if (
+        len(runs) == 1
+        and runs[0][1] - runs[0][0] > pitch * 0.5
+    ):
+        return mask, [], "possibly_joined_digits"
 
-    ends = np.where(
-        np.diff(padded) == -1
-    )[0]
-
-    runs = list(zip(starts, ends))
-
-    # Для этого эксперимента допускаем
-    # от 1 до 3 отдельных цифр.
-    if not 1 <= len(runs) <= 3:
-        return (
-            cleaned,
-            [],
-            f"uncertain_split:{len(runs)}",
-        )
-
+    # 6. Вырезаем предполагаемые цифры.
+    #
+    # ВАЖНО: используем исходную бинарную маску.
+    # Никаких линий сетки из неё не удаляли.
     digits = []
 
     for a, b in runs:
-        fragment = tight[:, a:b]
+        fragment = mask[:, a:b].copy()
 
-        yy, xx = np.where(fragment > 0)
+        digits.append(fragment)
 
-        if not len(xx):
-            return cleaned, [], "empty_segment"
-
-        digit = fragment[
-            yy.min():yy.max() + 1,
-            xx.min():xx.max() + 1,
-        ]
-
-        digits.append(digit)
-
-    return cleaned, digits, "ok"
-
+    return mask, digits, "ok"
 
 def _crnn_text(gray: np.ndarray) -> str:
     # Модель OpenCV Zoo ожидает 100x32.
@@ -522,8 +490,29 @@ def compare_digit_models(
             pitch,
         )
 
+        # Оцениваем количество штрихов ВНЕ центральных
+        # полос сетки, не изменяя само изображение.
+
+        roi_h, roi_w = cleaned.shape
+
+        yy, xx = np.ogrid[:roi_h, :roi_w]
+
+        local_cx = cx - x1
+        local_cy = cy - y1
+
+        band = max(1, round(pitch * 0.04))
+
+        outside_grid = (
+            (np.abs(xx - local_cx) > band)
+            &
+            (np.abs(yy - local_cy) > band)
+        )
+
+        pixels = cleaned[outside_grid]
+
         ink_score = (
-            cv2.countNonZero(cleaned) / cleaned.size
+            np.count_nonzero(pixels) / pixels.size
+            if pixels.size else 0.0
         )
 
         proposals.append((
