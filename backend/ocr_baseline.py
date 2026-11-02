@@ -375,9 +375,9 @@ def recognize_numbers(
     )
 
     # 5. Убираем обнаруженные линии сетки.
-    # grid_mask = cv2.bitwise_or(vertical, horizontal)
+    grid_mask = cv2.bitwise_or(vertical, horizontal)
 
-    # cleaned = cv2.subtract(binary, grid_mask)
+    cleaned = cv2.subtract(binary, grid_mask)
 
     candidates = []
     ocr_attempts = 0
