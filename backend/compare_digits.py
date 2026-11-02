@@ -60,135 +60,180 @@ def _crnn_net():
 
     return net
 
-
 def _mask_and_digits(
     gray: np.ndarray,
     cx: int,
     cy: int,
     pitch: float,
 ):
-    blurred = cv2.GaussianBlur(
-        gray, (3, 3), 0
+    # Мягкий контраст, без бинаризации Otsu.
+    # Все оттенки сохраняются.
+    ink = make_soft_ink(
+        gray,
+        gamma=1.5,
+        low=8.0,
+        high=125.0,
     )
 
-    _, mask = cv2.threshold(
-        blurred,
-        0,
-        255,
-        cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU,
+    h, w = ink.shape
+
+    # Бинарное представление используем
+    # ТОЛЬКО для анализа положения штрихов.
+    strong = ink >= 90
+
+    # 1. Не учитываем центральную горизонтальную
+    # линию при построении вертикальной проекции.
+    rows = np.ones(h, dtype=bool)
+
+    band_y = max(2, round(pitch * 0.045))
+
+    rows[
+        max(0, cy - band_y):
+        min(h, cy + band_y + 1)
+    ] = False
+
+    if not np.any(rows):
+        return ink, [], "invalid_roi"
+
+    # 2. Вертикальная проекция.
+    profile = np.count_nonzero(
+        strong[rows, :],
+        axis=0,
+    ).astype(np.float32)
+
+    # 3. Подавляем предполагаемую вертикальную
+    # линию сетки только в проекции.
+    #
+    # Исходное изображение ink не изменяется!
+    band_x = max(1, round(pitch * 0.025))
+
+    for x in range(
+        max(0, cx - band_x),
+        min(w, cx + band_x + 1),
+    ):
+        if profile[x] > rows.sum() * 0.75:
+            profile[x] = 0
+
+    # 4. Лёгкое сглаживание проекции.
+    profile = np.convolve(
+        profile,
+        [0.25, 0.5, 0.25],
+        mode="same",
     )
 
-    # Удаляем предполагаемые линии сетки.
-    # Только в ветке сегментации: исходный ROI
-    # для CRNN не изменяем.
-    line_width = max(
-        1, int(round(pitch * 0.025))
+    # 5. Находим столбцы с достаточно
+    # выраженными тёмными штрихами.
+    min_signal = max(
+        2.0,
+        rows.sum() * 0.07,
     )
 
-    cv2.line(
-        mask,
-        (cx, 0),
-        (cx, mask.shape[0] - 1),
-        0,
-        line_width,
+    occupied = profile >= min_signal
+
+    padded = np.pad(
+        occupied.astype(np.int8),
+        (1, 1),
     )
 
-    cv2.line(
-        mask,
-        (0, cy),
-        (mask.shape[1] - 1, cy),
-        0,
-        line_width,
-    )
-
-    # Частично соединяем разорванные штрихи.
-    mask = cv2.morphologyEx(
-        mask,
-        cv2.MORPH_CLOSE,
-        np.ones((2, 2), np.uint8),
-    )
-
-    # Убираем мелкий шум.
-    count, labels, stats, _ = (
-        cv2.connectedComponentsWithStats(mask, 8)
-    )
-
-    cleaned = np.zeros_like(mask)
-
-    min_area = max(
-        4, int(pitch * pitch * 0.002)
-    )
-
-    for i in range(1, count):
-        x, y, w, h, area = stats[i]
-
-        if (
-            area >= min_area
-            and h >= 4
-            and w <= mask.shape[1] * 0.95
-        ):
-            cleaned[labels == i] = 255
-
-    ys, xs = np.where(cleaned > 0)
-
-    if not len(xs):
-        return cleaned, [], "blank"
-
-    min_x = int(xs.min())
-    max_x = int(xs.max()) + 1
-
-    min_y = int(ys.min())
-    max_y = int(ys.max()) + 1
-
-    tight = cleaned[
-        min_y:max_y,
-        min_x:max_x,
-    ]
-
-    # Вертикальная проекция.
-    occupied = np.any(
-        tight > 0, axis=0
-    ).astype(np.int8)
-
-    padded = np.pad(occupied, (1, 1))
+    transitions = np.diff(padded)
 
     starts = np.where(
-        np.diff(padded) == 1
+        transitions == 1
     )[0]
 
     ends = np.where(
-        np.diff(padded) == -1
+        transitions == -1
     )[0]
 
-    runs = list(zip(starts, ends))
+    raw_runs = [
+        (int(a), int(b))
+        for a, b in zip(starts, ends)
+    ]
 
-    # Для этого эксперимента допускаем
-    # от 1 до 3 отдельных цифр.
-    if not 1 <= len(runs) <= 3:
+    if not raw_runs:
+        return ink, [], "blank_or_uncertain"
+
+    # 6. Объединяем близкие группы.
+    #
+    # Небольшие разрывы могут возникать
+    # внутри одной и той же цифры.
+    max_gap = max(
+        2,
+        round(pitch * 0.06),
+    )
+
+    merged = []
+
+    for a, b in raw_runs:
+        if not merged:
+            merged.append([a, b])
+            continue
+
+        previous = merged[-1]
+
+        gap = a - previous[1]
+
+        if gap <= max_gap:
+            previous[1] = b
+        else:
+            merged.append([a, b])
+
+    # 7. Фильтруем слабые изолированные группы.
+    #
+    # Не удаляем их из изображения — только
+    # исключаем из кандидатов сегментации.
+    min_width = max(
+        2,
+        round(pitch * 0.025),
+    )
+
+    max_profile = float(profile.max())
+
+    runs = []
+
+    for a, b in merged:
+        width = b - a
+        strength = float(profile[a:b].sum())
+
+        if width < min_width:
+            continue
+
+        if strength < max_profile * 0.20:
+            continue
+
+        runs.append((a, b))
+
+    # 8. Проверяем количество групп.
+    if not runs:
+        return ink, [], "no_segments"
+
+    if len(runs) > 3:
+        widths = [b - a for a, b in runs]
+
         return (
-            cleaned,
+            ink,
             [],
-            f"uncertain_split:{len(runs)}",
+            f"uncertain_split:{len(runs)} "
+            f"widths={widths}",
         )
 
+    # 9. Вырезаем фрагменты из исходной
+    # мягкой маски, без удаления линий.
     digits = []
 
     for a, b in runs:
-        fragment = tight[:, a:b]
+        # Небольшой запас по горизонтали.
+        margin = max(1, round(pitch * 0.02))
 
-        yy, xx = np.where(fragment > 0)
+        left = max(0, a - margin)
+        right = min(w, b + margin)
 
-        if not len(xx):
-            return cleaned, [], "empty_segment"
+        fragment = ink[:, left:right].copy()
 
-        digit = fragment[
-            yy.min():yy.max() + 1,
-            xx.min():xx.max() + 1,
-        ]
+        digits.append(fragment)
 
-        digits.append(digit)
+    return ink, digits, "ok"
 
-    return cleaned, digits, "ok"
 
 def make_soft_ink(
     gray: np.ndarray,
