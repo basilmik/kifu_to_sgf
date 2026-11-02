@@ -686,8 +686,8 @@ GridResult rectify_grid(const std::vector<std::uint8_t>& rgba, int width, int he
             bool y_ok = fit_grid_axis(
                 horizontal_lines, false, grid_size, ys, qy
             );
-            final_vertical_lines = vertical_lines
-            final_horizontal_lines = horizontal_lines
+            final_vertical_lines = vertical_lines;
+            final_horizontal_lines = horizontal_lines;
 
             if (!x_ok || !y_ok) continue;
 
