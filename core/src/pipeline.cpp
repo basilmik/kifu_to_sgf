@@ -160,26 +160,42 @@ DetectInternalResult run_detect(const cv::Mat& bgr,
     }
 
     std::vector<cv::Point> best;
-    const std::size_t limit = std::min<std::size_t>(contours.size(), 10);
+    const std::size_t limit = std::min<std::size_t>(contours.size(), 60);
     for (std::size_t i = 0; i < limit; ++i) {
         const auto& c = contours[i];
         double area = cv::contourArea(c);
         double peri = cv::arcLength(c, true);
 
         std::vector<cv::Point> approx;
-        cv::approxPolyDP(c, approx, 0.03 * peri, true);
+        // cv::approxPolyDP(c, approx, 0.03 * peri, true);
 
-        bool big_enough   = area >= img_area * min_area_ratio;
-        bool small_enough = area <= img_area * 0.90;
+        // bool big_enough   = area >= img_area * min_area_ratio;
+        // bool small_enough = area <= img_area * 0.90;
+
+        // TEST NEW LIMITS: RETURN BACK LATER
+        bool big_enough = area >= img_area * 0.025;
+        bool small_enough = area <= img_area * 0.995;
 
         bool quad_ok = false;
         std::vector<cv::Point> quad;
-        if (approx.size() >= 4 && approx.size() <= 6) {
-            quad = reduce_to_quad(approx);
-            if (quad.size() == 4 && is_reasonable_quad(quad)) {
-                quad_ok = true;
+        for (double eps : {0.015, 0.02, 0.03, 0.045, 0.06}) {
+            std::vector<cv::Point> candidate;
+            cv::approxPolyDP(c, candidate, eps * peri, true);
+
+            if (candidate.size() == 4 && cv::isContourConvex(candidate) && is_reasonable_quad(candidate)) {
+                quad = candidate;
+                break;
             }
         }
+
+        bool quad_ok = !quad.empty();
+
+        // if (approx.size() >= 4 && approx.size() <= 6) {
+        //     quad = reduce_to_quad(approx);
+        //     if (quad.size() == 4 && is_reasonable_quad(quad)) {
+        //         quad_ok = true;
+        //     }
+        // }
 
         if (debug) {
             ContourInfo ci;
@@ -582,34 +598,117 @@ GridResult rectify_grid(const std::vector<std::uint8_t>& rgba, int width, int he
             output_side / (grid_size * 3)
         );
 
-        cv::Mat vertical_kernel =
-            cv::getStructuringElement(
-                cv::MORPH_RECT,
-                cv::Size(1, kernel_length)
+        // cv::Mat vertical_kernel =
+        //     cv::getStructuringElement(
+        //         cv::MORPH_RECT,
+        //         cv::Size(1, kernel_length)
+        //     );
+
+        // cv::Mat horizontal_kernel =
+        //     cv::getStructuringElement(
+        //         cv::MORPH_RECT,
+        //         cv::Size(kernel_length, 1)
+        //     );
+
+        // cv::Mat vertical_lines;
+        // cv::Mat horizontal_lines;
+
+        // cv::morphologyEx(
+        //     binary,
+        //     vertical_lines,
+        //     cv::MORPH_OPEN,
+        //     vertical_kernel
+        // );
+
+        // cv::morphologyEx(
+        //     binary,
+        //     horizontal_lines,
+        //     cv::MORPH_OPEN,
+        //     horizontal_kernel
+        // );
+
+        double best_score = -1.0;
+
+        std::vector<float> best_x_lines;
+        std::vector<float> best_y_lines;
+
+        double best_x_quality = 0.0;
+        double best_y_quality = 0.0;
+
+        const float estimated_step =
+            static_cast<float>(output_side) / (grid_size - 1);
+
+        for (float factor : {0.25f, 0.40f, 0.55f}) {
+            const int kernel_length = std::max(
+                15,
+                static_cast<int>(
+                    std::round(estimated_step * factor)
+                )
             );
 
-        cv::Mat horizontal_kernel =
-            cv::getStructuringElement(
-                cv::MORPH_RECT,
-                cv::Size(kernel_length, 1)
+            cv::Mat vertical_kernel =
+                cv::getStructuringElement(
+                    cv::MORPH_RECT,
+                    cv::Size(1, kernel_length)
+                );
+
+            cv::Mat horizontal_kernel =
+                cv::getStructuringElement(
+                    cv::MORPH_RECT,
+                    cv::Size(kernel_length, 1)
+                );
+
+            cv::Mat vertical_lines;
+            cv::Mat horizontal_lines;
+
+            cv::morphologyEx(
+                binary,
+                vertical_lines,
+                cv::MORPH_OPEN,
+                vertical_kernel
             );
 
-        cv::Mat vertical_lines;
-        cv::Mat horizontal_lines;
+            cv::morphologyEx(
+                binary,
+                horizontal_lines,
+                cv::MORPH_OPEN,
+                horizontal_kernel
+            );
 
-        cv::morphologyEx(
-            binary,
-            vertical_lines,
-            cv::MORPH_OPEN,
-            vertical_kernel
-        );
+            std::vector<float> xs, ys;
+            double qx = 0.0, qy = 0.0;
 
-        cv::morphologyEx(
-            binary,
-            horizontal_lines,
-            cv::MORPH_OPEN,
-            horizontal_kernel
-        );
+            bool x_ok = fit_grid_axis(
+                vertical_lines, true, grid_size, xs, qx
+            );
+
+            bool y_ok = fit_grid_axis(
+                horizontal_lines, false, grid_size, ys, qy
+            );
+
+            if (!x_ok || !y_ok) continue;
+
+            const double score = qx + qy;
+
+                if (score > best_score) {
+                    best_score = score;
+                    best_x_lines = xs;
+                    best_y_lines = ys;
+                    best_x_quality = qx;
+                    best_y_quality = qy;
+                }
+            }
+
+        if (best_score < 0.0) {
+            result.note = "no grid for tested morphology kernels";
+            return result;
+        }
+
+        result.x_lines = best_x_lines;
+        result.y_lines = best_y_lines;
+
+        result.x_quality = best_x_quality;
+        result.y_quality = best_y_quality;
 
         // Подгоняем модель регулярной сетки.
         const bool x_ok = fit_grid_axis(
