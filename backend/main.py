@@ -415,13 +415,121 @@ class ExtractCellsRequest(BaseModel):
     y_lines: list[float]
 
 
+def _segment_digits(crop):
+    """
+    Разбивает кроп 65x65 (или любого размера) на отдельные цифры
+    по вертикальной проекции.
+
+    Возвращает список (digit_mask, x_start, x_end),
+    где digit_mask — uint8, цифра яркая на тёмном фоне,
+    уже обрезанная по bbox с padding 2 px.
+    """
+    import numpy as np
+    import cv2
+
+    if crop.size == 0:
+        return []
+
+    inverted = 255 - crop
+
+    # Бинаризация для анализа штрихов.
+    _, binary = cv2.threshold(
+        inverted, 0, 255,
+        cv2.THRESH_BINARY | cv2.THRESH_OTSU,
+    )
+
+    # Вертикальная проекция: сколько белых пикселей в каждом столбце.
+    profile = (binary > 0).sum(axis=0).astype(np.float32)
+
+    if profile.max() <= 0:
+        return []
+
+    # Сглаживание, чтобы разрывы внутри одной цифры не резали её.
+    profile = np.convolve(profile, [0.25, 0.5, 0.25], mode="same")
+
+    # Порог: столбцы с достаточным количеством штрихов.
+    min_signal = max(1.0, profile.max() * 0.08)
+    occupied = profile >= min_signal
+
+    padded = np.pad(occupied.astype(np.int8), (1, 1))
+    transitions = np.diff(padded)
+    starts = np.where(transitions == 1)[0]
+    ends = np.where(transitions == -1)[0]
+
+    runs = [(int(a), int(b)) for a, b in zip(starts, ends)]
+
+    if not runs:
+        return []
+
+    # Объединяем близкие группы (внутри одной цифры бывают разрывы).
+    max_gap = max(2, int(round(binary.shape[1] * 0.04)))
+
+    merged = []
+    for a, b in runs:
+        if not merged:
+            merged.append([a, b])
+            continue
+        previous = merged[-1]
+        gap = a - previous[1]
+        if gap <= max_gap:
+            previous[1] = b
+        else:
+            merged.append([a, b])
+
+    # Фильтруем слишком узкие/слабые группы.
+    min_width = max(2, int(round(binary.shape[1] * 0.03)))
+    max_profile = float(profile.max())
+
+    filtered = []
+    for a, b in merged:
+        width = b - a
+        strength = float(profile[a:b].sum())
+        if width < min_width:
+            continue
+        if strength < max_profile * 0.15:
+            continue
+        filtered.append((a, b))
+
+    if not filtered:
+        return []
+
+    digits = []
+
+    for a, b in filtered:
+        # margin по краям, чтобы не отрезать штрихи цифры.
+        margin = max(1, int(round((b - a) * 0.05)))
+        left = max(0, a - margin)
+        right = min(binary.shape[1], b + margin)
+
+        # Для MNIST нужна маска цифры (белая на чёрном),
+        # а не сырой grayscale. Используем inverted + bbox.
+        fragment = inverted[:, left:right].copy()
+
+        ys, xs = np.where(fragment > 32)
+        if len(xs) == 0:
+            continue
+
+        y1, y2 = max(0, ys.min() - 2), min(fragment.shape[0], ys.max() + 3)
+        x1, x2 = max(0, xs.min() - 2), min(fragment.shape[1], xs.max() + 3)
+
+        if x2 - x1 < 2 or y2 - y1 < 2:
+            continue
+
+        tight = fragment[y1:y2, x1:x2].copy()
+
+        digits.append((tight, left, right))
+
+    return digits
+
+
 def _mnist_predict_cell_with_debug(crop):
     """
-    Прогоняет один кроп через MNIST.
-    Возвращает (digit, confidence, debug).
+    Сегментирует кроп на отдельные цифры, прогоняет каждую через
+    MNIST и конкатенирует результаты.
 
-    debug содержит base64 PNG промежуточных стадий:
-    crop, inverted, tight, и размеры tight, а также note.
+    Возвращает (digit_str, confidence_avg, debug).
+    digit_str — например "123" или None.
+    debug содержит base64 PNG промежуточных стадий.
     """
     import numpy as np
 
@@ -437,59 +545,96 @@ def _mnist_predict_cell_with_debug(crop):
             "tight_png_b64": "",
             "tight_w": 0,
             "tight_h": 0,
+            "digit_pngs_b64": [],
+            "digit_texts": [],
             "note": "empty_crop",
         }
 
-    # _mnist_digit ожидает маску, где цифра яркая на тёмном фоне.
     inverted = 255 - crop
     inverted_b64 = _np_png_b64(inverted)
 
-    ys, xs = np.where(inverted > 32)
-    if len(xs) == 0:
+    digits = _segment_digits(crop)
+
+    if not digits:
         return None, None, {
             "crop_png_b64": crop_b64,
             "inverted_png_b64": inverted_b64,
             "tight_png_b64": "",
             "tight_w": 0,
             "tight_h": 0,
-            "note": "no_ink",
+            "digit_pngs_b64": [],
+            "digit_texts": [],
+            "note": "no_digits",
         }
 
-    x1, x2 = int(xs.min()), int(xs.max()) + 1
-    y1, y2 = int(ys.min()), int(ys.max()) + 1
+    recognized_text = []
+    confidences = []
+    digit_pngs = []
+    digit_texts = []
 
-    if x2 - x1 < 2 or y2 - y1 < 2:
+    # Для превью склеим все найденные цифры в одну полосу —
+    # это то, что было подано в модель по кускам.
+    first_shape = None
+
+    for tight, _left, _right in digits:
+        try:
+            char, conf, prepared = _mnist_digit(tight)
+        except Exception:
+            continue
+
+        recognized_text.append(char)
+        confidences.append(float(conf))
+        digit_texts.append(char)
+        digit_pngs.append(_np_png_b64(prepared))
+
+        if first_shape is None:
+            first_shape = prepared.shape
+
+    if not recognized_text:
         return None, None, {
             "crop_png_b64": crop_b64,
             "inverted_png_b64": inverted_b64,
             "tight_png_b64": "",
-            "tight_w": int(x2 - x1),
-            "tight_h": int(y2 - y1),
-            "note": "tight_too_small",
+            "tight_w": 0,
+            "tight_h": 0,
+            "digit_pngs_b64": [],
+            "digit_texts": [],
+            "note": "all_digits_failed",
         }
 
-    tight = inverted[y1:y2, x1:x2]
-    tight_b64 = _np_png_b64(tight)
+    # Превью «что ушло в MNIST»: горизонтальная полоса из 28×28 входов.
+    if digit_pngs and first_shape is not None:
+        strip = np.zeros((28, 28 * len(digit_pngs)), dtype=np.uint8)
+        for i, _ in enumerate(digit_pngs):
+            # просто склеиваем куски; конкретные пиксели уже в digit_pngs
+            pass
+        # аккуратно: читаем из base64 обратно нельзя, поэтому
+        # соберём из prepared на лету
+        strip = np.zeros((28, 28 * len(digits)), dtype=np.uint8)
+        for i, (tight, _l, _r) in enumerate(digits):
+            try:
+                _, _, prepared = _mnist_digit(tight)
+                strip[:, i * 28:(i + 1) * 28] = prepared
+            except Exception:
+                pass
+        strip_b64 = _np_png_b64(strip)
+        strip_w = int(strip.shape[1])
+        strip_h = int(strip.shape[0])
+    else:
+        strip_b64 = ""
+        strip_w = 0
+        strip_h = 0
 
-    try:
-        digit_str, conf, prepared = _mnist_digit(tight)
-    except Exception:
-        return None, None, {
-            "crop_png_b64": crop_b64,
-            "inverted_png_b64": inverted_b64,
-            "tight_png_b64": tight_b64,
-            "tight_w": int(tight.shape[1]),
-            "tight_h": int(tight.shape[0]),
-            "note": "mnist_error",
-        }
+    avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
 
-    return digit_str, float(conf), {
+    return "".join(recognized_text), round(avg_conf, 3), {
         "crop_png_b64": crop_b64,
         "inverted_png_b64": inverted_b64,
-        # Возвращаем уже подготовленное 28×28 — то, что реально ушло в MNIST.
-        "tight_png_b64": _np_png_b64(prepared),
-        "tight_w": int(prepared.shape[1]),
-        "tight_h": int(prepared.shape[0]),
+        "tight_png_b64": strip_b64,
+        "tight_w": strip_w,
+        "tight_h": strip_h,
+        "digit_pngs_b64": digit_pngs,
+        "digit_texts": digit_texts,
         "note": "ok",
     }
 
@@ -572,6 +717,8 @@ async def extract_cells_endpoint(req: ExtractCellsRequest):
                         "tight_png_b64": "",
                         "tight_w": 0,
                         "tight_h": 0,
+                        "digit_pngs_b64": [],
+                        "digit_texts": [],
                         "note": "empty",
                     })
                     continue
@@ -601,6 +748,8 @@ async def extract_cells_endpoint(req: ExtractCellsRequest):
                         "tight_png_b64": "",
                         "tight_w": 0,
                         "tight_h": 0,
+                        "digit_pngs_b64": [],
+                        "digit_texts": [],
                         "note": "empty",
                     })
                 else:

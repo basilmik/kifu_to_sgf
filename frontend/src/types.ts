@@ -126,10 +126,11 @@ export interface ExtractCellsResponse {
     tight_png_b64: string;
     tight_w: number;
     tight_h: number;
+    digit_pngs_b64: string[];
+    digit_texts: string[];
     note: string;
   }[];
 }
-
 export interface GridMaskResponse {
   width: number;
   height: number;

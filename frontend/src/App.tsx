@@ -612,136 +612,162 @@ export default function App() {
                   : "Вырезать квадратики"}
               </button>
             </div>
+            
+          {cellsResult && (
+            <div style={{ marginTop: 20 }}>
+              <h3>Вырезанные квадратики (debug)</h3>
+              <p>
+                <b>Размер сетки:</b>{" "}
+                {cellsResult.grid_size}×{cellsResult.grid_size}
+                <br />
+                <b>Вырезано:</b>{" "}
+                {cellsResult.cells.length}
+              </p>
 
-            {cellsResult && (
-              <div style={{ marginTop: 20 }}>
-                <h3>Вырезанные квадратики (debug)</h3>
-                <p>
-                  <b>Размер сетки:</b>{" "}
-                  {cellsResult.grid_size}×{cellsResult.grid_size}
-                  <br />
-                  <b>Вырезано:</b>{" "}
-                  {cellsResult.cells.length}
-                </p>
-
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: `repeat(${cellsResult.grid_size}, minmax(0, 1fr))`,
-                    gap: 2,
-                    maxWidth: 1100,
-                    marginTop: 12,
-                  }}
-                >
-                  {cellsResult.cells.map((c) => (
-                    <figure
-                      key={`${c.row}-${c.col}`}
-                      style={{
-                        margin: 0,
-                        padding: 2,
-                        border: "1px solid #ccc",
-                        background: "#fafafa",
-                      }}
-                      title={`row=${c.row}, col=${c.col} — ${c.note}`}
-                    >
-                      {c.crop_png_b64 ? (
-                        <img
-                          src={b64ToDataUrl(c.crop_png_b64)}
-                          alt={`crop ${c.row}-${c.col}`}
-                          style={{
-                            width: "100%",
-                            height: "auto",
-                            display: "block",
-                            imageRendering: "pixelated",
-                          }}
-                        />
-                      ) : (
-                        <div
-                          style={{
-                            width: "100%",
-                            aspectRatio: "1 / 1",
-                            background: "#eee",
-                          }}
-                        />
-                      )}
-
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: `repeat(${cellsResult.grid_size}, minmax(0, 1fr))`,
+                  gap: 2,
+                  maxWidth: 1100,
+                  marginTop: 12,
+                }}
+              >
+                {cellsResult.cells.map((c) => (
+                  <figure
+                    key={`${c.row}-${c.col}`}
+                    style={{
+                      margin: 0,
+                      padding: 2,
+                      border: "1px solid #ccc",
+                      background: "#fafafa",
+                    }}
+                    title={`row=${c.row}, col=${c.col} — ${c.note}`}
+                  >
+                    {c.crop_png_b64 ? (
+                      <img
+                        src={b64ToDataUrl(c.crop_png_b64)}
+                        alt={`crop ${c.row}-${c.col}`}
+                        style={{
+                          width: "100%",
+                          height: "auto",
+                          display: "block",
+                          imageRendering: "pixelated",
+                        }}
+                      />
+                    ) : (
                       <div
                         style={{
-                          display: "grid",
-                          gridTemplateColumns: "1fr 1fr",
-                          gap: 2,
-                          marginTop: 2,
+                          width: "100%",
+                          aspectRatio: "1 / 1",
+                          background: "#eee",
                         }}
-                      >
-                        <div>
-                          {c.inverted_png_b64 ? (
-                            <img
-                              src={b64ToDataUrl(c.inverted_png_b64)}
-                              alt="inverted"
-                              style={{
-                                width: "100%",
-                                height: "auto",
-                                display: "block",
-                                imageRendering: "pixelated",
-                              }}
-                            />
-                          ) : (
-                            <div style={{ aspectRatio: "1 / 1", background: "#eee" }} />
-                          )}
-                          <div style={{ fontSize: 9, textAlign: "center", color: "#666" }}>
-                            inv
-                          </div>
-                        </div>
+                      />
+                    )}
 
-                        <div>
-                          {c.tight_png_b64 ? (
-                            <img
-                              src={b64ToDataUrl(c.tight_png_b64)}
-                              alt="tight"
-                              style={{
-                                width: "100%",
-                                height: "auto",
-                                display: "block",
-                                imageRendering: "pixelated",
-                              }}
-                            />
-                          ) : (
-                            <div style={{ aspectRatio: "1 / 1", background: "#eee" }} />
-                          )}
-                          <div style={{ fontSize: 9, textAlign: "center", color: "#666" }}>
-                            tight {c.tight_h}×{c.tight_w}
-                          </div>
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "1fr 1fr",
+                        gap: 2,
+                        marginTop: 2,
+                      }}
+                    >
+                      <div>
+                        {c.inverted_png_b64 ? (
+                          <img
+                            src={b64ToDataUrl(c.inverted_png_b64)}
+                            alt="inverted"
+                            style={{
+                              width: "100%",
+                              height: "auto",
+                              display: "block",
+                              imageRendering: "pixelated",
+                            }}
+                          />
+                        ) : (
+                          <div style={{ aspectRatio: "1 / 1", background: "#eee" }} />
+                        )}
+                        <div style={{ fontSize: 9, textAlign: "center", color: "#666" }}>
+                          inv
                         </div>
                       </div>
 
-                      <figcaption
+                      <div>
+                        {c.tight_png_b64 ? (
+                          <img
+                            src={b64ToDataUrl(c.tight_png_b64)}
+                            alt="tight"
+                            style={{
+                              width: "100%",
+                              height: "auto",
+                              display: "block",
+                              imageRendering: "pixelated",
+                            }}
+                          />
+                        ) : (
+                          <div style={{ aspectRatio: "1 / 1", background: "#eee" }} />
+                        )}
+                        <div style={{ fontSize: 9, textAlign: "center", color: "#666" }}>
+                          mnist {c.tight_h}×{c.tight_w}
+                        </div>
+                      </div>
+                    </div>
+
+                    {c.digit_pngs_b64.length > 0 && (
+                      <div
                         style={{
-                          fontSize: 10,
-                          textAlign: "center",
-                          color: "#666",
-                          lineHeight: 1.25,
+                          display: "flex",
+                          flexWrap: "wrap",
+                          gap: 1,
+                          marginTop: 2,
+                          justifyContent: "center",
                         }}
                       >
-                        <div>
-                          {c.row},{c.col}
-                        </div>
-                        <div>
-                          {c.height}×{c.width}px
-                        </div>
-                        <div>
-                          {c.mnist_digit !== null
-                            ? `${c.mnist_digit} (${c.mnist_confidence!.toFixed(2)})`
-                            : "—"}
-                        </div>
-                        <div style={{ color: "#999" }}>
-                          {c.note}
-                        </div>
-                      </figcaption>
-                    </figure>
-                  ))}
-                </div>
+                        {c.digit_pngs_b64.map((png, i) => (
+                          <div key={i} style={{ textAlign: "center" }}>
+                            <img
+                              src={b64ToDataUrl(png)}
+                              alt={`digit ${i}`}
+                              width={28}
+                              style={{ imageRendering: "pixelated" }}
+                            />
+                            <div style={{ fontSize: 9, color: "#444" }}>
+                              {c.digit_texts[i] ?? "?"}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <figcaption
+                      style={{
+                        fontSize: 10,
+                        textAlign: "center",
+                        color: "#666",
+                        lineHeight: 1.25,
+                      }}
+                    >
+                      <div>
+                        {c.row},{c.col}
+                      </div>
+                      <div>
+                        {c.height}×{c.width}px
+                      </div>
+                      <div>
+                        {c.mnist_digit !== null
+                          ? `${c.mnist_digit} (${c.mnist_confidence!.toFixed(2)})`
+                          : "—"}
+                      </div>
+                      <div style={{ color: "#999" }}>
+                        {c.note}
+                      </div>
+                    </figcaption>
+                  </figure>
+                ))}
               </div>
-            )}
+            </div>
+          )}
           </div>
         )}
       </section>
