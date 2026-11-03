@@ -128,9 +128,19 @@ export interface ExtractCellsResponse {
     tight_h: number;
     digit_pngs_b64: string[];
     digit_texts: string[];
+
+    circle_found: boolean;
+    circle_mask_png_b64: string;
+    circle_overlay_png_b64: string;
+    circle_bbox: [number, number, number, number] | null;
+    circle_circularity: number;
+    circle_note: string;
+
     note: string;
   }[];
 }
+
+
 export interface GridMaskResponse {
   width: number;
   height: number;
