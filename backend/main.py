@@ -114,8 +114,6 @@ async def detect_board_endpoint(file: UploadFile = File(...)):
 
     marked_img = Image.frombytes("RGBA", (width, height), r["marked_rgba"])
 
-    # Координаты углов пересчитываем обратно в исходный масштаб,
-    # чтобы они были в пикселях оригинального фото.
     corners_orig = [[int(x * scale), int(y * scale)] for x, y in r["corners"]]
 
     return {
@@ -188,16 +186,10 @@ async def grid_endpoint(
     grid_size: int = Form(19),
 ):
     if file.content_type not in ("image/jpeg", "image/png"):
-        raise HTTPException(
-            400,
-            "only JPEG and PNG are supported"
-        )
+        raise HTTPException(400, "only JPEG and PNG are supported")
 
     if grid_size not in (9, 13, 19):
-        raise HTTPException(
-            422,
-            "grid_size must be 9, 13 or 19"
-        )
+        raise HTTPException(422, "grid_size must be 9, 13 or 19")
 
     raw = await file.read()
 
@@ -205,11 +197,8 @@ async def grid_endpoint(
         raise HTTPException(400, "empty file")
 
     img, scale = _load_rgba(raw)
-
     width, height = img.size
 
-    # Углы пользователь передаёт в координатах
-    # оригинального изображения (после EXIF-поворота).
     corners_scaled = []
 
     if manual_corners:
@@ -229,16 +218,10 @@ async def grid_endpoint(
                 if not math.isfinite(x) or not math.isfinite(y):
                     raise ValueError("non-finite coordinates")
 
-                corners_scaled.append((
-                    x / scale,
-                    y / scale
-                ))
+                corners_scaled.append((x / scale, y / scale))
 
         except (ValueError, TypeError) as e:
-            raise HTTPException(
-                422,
-                f"invalid manual_corners: {e}"
-            )
+            raise HTTPException(422, f"invalid manual_corners: {e}")
 
     try:
         result = rectify_grid(
@@ -254,14 +237,9 @@ async def grid_endpoint(
         raise HTTPException(422, str(e))
 
     except Exception as e:
-        raise HTTPException(
-            500,
-            f"grid processing error: {e}"
-        )
+        raise HTTPException(500, f"grid processing error: {e}")
 
-    # Восстанавливаем выпрямленное изображение.
     rectified_png_b64 = None
-
     side = result["rectified_side"]
 
     if side > 0:
@@ -270,12 +248,8 @@ async def grid_endpoint(
             (side, side),
             result["rectified_rgba"]
         )
-
         rectified_png_b64 = _png_b64(rectified)
 
-    # Координаты сетки C++ возвращает в масштабе
-    # уменьшенной фотографии.
-    # Переводим их в исходный масштаб.
     grid_points_original = [
         [round(x * scale, 2), round(y * scale, 2)]
         for x, y in result["grid_points_image"]
@@ -290,19 +264,14 @@ async def grid_endpoint(
         "found": result["found"],
         "note": result["note"],
         "grid_size": result["grid_size"],
-
         "original_width": round(width * scale),
         "original_height": round(height * scale),
-
         "rectified_side": side,
         "rectified_png_b64": rectified_png_b64,
-
         "corners_original": corners_original,
         "grid_points_original": grid_points_original,
-
         "x_lines": result["x_lines"],
         "y_lines": result["y_lines"],
-
         "x_quality": result["x_quality"],
         "y_quality": result["y_quality"]
     }
@@ -317,36 +286,24 @@ class RecognizeRequest(BaseModel):
     compare_models: bool = False
     max_rois: int = 100
 
+
 @app.post("/api/recognize-sgf")
 async def recognize_sgf_endpoint(req: RecognizeRequest):
 
     if req.grid_size not in (9, 13, 19):
-        raise HTTPException(
-            422,
-            "unsupported grid size"
-        )
+        raise HTTPException(422, "unsupported grid size")
 
     if (
         len(req.x_lines) != req.grid_size
         or len(req.y_lines) != req.grid_size
     ):
-        raise HTTPException(
-            422,
-            "invalid grid line count"
-        )
+        raise HTTPException(422, "invalid grid line count")
 
     if not 1 <= req.max_move <= 2000:
-        raise HTTPException(
-            422,
-            "invalid max_move"
-        )
+        raise HTTPException(422, "invalid max_move")
 
-    # Ограничиваем размер входного base64.
     if len(req.rectified_png_b64) > 20_000_000:
-        raise HTTPException(
-            413,
-            "image payload too large"
-        )
+        raise HTTPException(413, "image payload too large")
 
     try:
         raw = base64.b64decode(
@@ -363,25 +320,13 @@ async def recognize_sgf_endpoint(req: RecognizeRequest):
 
             image = source.convert("RGB")
 
-    except (
-        ValueError,
-        binascii.Error,
-        OSError,
-    ) as e:
-        raise HTTPException(
-            400,
-            f"invalid image: {e}"
-        )
+    except (ValueError, binascii.Error, OSError) as e:
+        raise HTTPException(400, f"invalid image: {e}")
 
     try:
-        # OCR может выполняться заметное время.
-        # Выносим синхронную работу из event loop.
         if req.compare_models:
             if not 1 <= req.max_rois <= req.grid_size ** 2:
-                raise HTTPException(
-                    422,
-                    "invalid max_rois"
-                )
+                raise HTTPException(422, "invalid max_rois")
 
             return await run_in_threadpool(
                 compare_ocr,
@@ -407,20 +352,15 @@ async def recognize_sgf_endpoint(req: RecognizeRequest):
 
 class CompareDigitsRequest(BaseModel):
     rectified_png_b64: str
-
     grid_size: int = 19
     x_lines: list[float]
     y_lines: list[float]
-
     max_rois: int = 6
-
-    # Необязательно: конкретные клетки для теста.
     cells: list[tuple[int, int]] | None = None
 
+
 @app.post("/api/compare-digit-models")
-async def compare_digit_models_endpoint(
-    req: CompareDigitsRequest,
-):
+async def compare_digit_models_endpoint(req: CompareDigitsRequest):
     if req.grid_size not in (9, 13, 19):
         raise HTTPException(422, "invalid grid size")
 
@@ -452,10 +392,7 @@ async def compare_digit_models_endpoint(
             image = source.convert("RGB")
 
     except (ValueError, binascii.Error, OSError) as e:
-        raise HTTPException(
-            400,
-            f"invalid image: {e}",
-        )
+        raise HTTPException(400, f"invalid image: {e}")
 
     try:
         return await run_in_threadpool(
@@ -481,19 +418,18 @@ class ExtractCellsRequest(BaseModel):
 def _mnist_predict_cell_with_debug(crop):
     """
     Прогоняет один кроп через MNIST.
-    Возвращает (digit, confidence, debug) где debug — словарь
-    с base64 PNG промежуточных стадий: crop, inverted, tight.
-    Для пустого кропа возвращает (None, None, None).
+    Возвращает (digit, confidence, debug).
+
+    debug содержит base64 PNG промежуточных стадий:
+    crop, inverted, tight, и размеры tight, а также note.
     """
     import numpy as np
-    import cv2
 
     if crop.size == 0:
         return None, None, None
 
     crop_b64 = _np_png_b64(crop)
 
-    # Проверяем, есть ли вообще "чернила" в кропе.
     if float(crop.mean()) >= 250.0 and float(crop.std()) < 2.0:
         return None, None, {
             "crop_png_b64": crop_b64,
@@ -508,7 +444,6 @@ def _mnist_predict_cell_with_debug(crop):
     inverted = 255 - crop
     inverted_b64 = _np_png_b64(inverted)
 
-    # Обрезаем по содержимому, чтобы убрать пустые поля.
     ys, xs = np.where(inverted > 32)
     if len(xs) == 0:
         return None, None, {
@@ -537,7 +472,7 @@ def _mnist_predict_cell_with_debug(crop):
     tight_b64 = _np_png_b64(tight)
 
     try:
-        digit_str, conf, _ = _mnist_digit(tight)
+        digit_str, conf, prepared = _mnist_digit(tight)
     except Exception:
         return None, None, {
             "crop_png_b64": crop_b64,
@@ -551,9 +486,10 @@ def _mnist_predict_cell_with_debug(crop):
     return digit_str, float(conf), {
         "crop_png_b64": crop_b64,
         "inverted_png_b64": inverted_b64,
-        "tight_png_b64": tight_b64,
-        "tight_w": int(tight.shape[1]),
-        "tight_h": int(tight.shape[0]),
+        # Возвращаем уже подготовленное 28×28 — то, что реально ушло в MNIST.
+        "tight_png_b64": _np_png_b64(prepared),
+        "tight_w": int(prepared.shape[1]),
+        "tight_h": int(prepared.shape[0]),
         "note": "ok",
     }
 
@@ -603,8 +539,6 @@ async def extract_cells_endpoint(req: ExtractCellsRequest):
     if dx <= 0 or dy <= 0:
         raise HTTPException(422, "invalid grid spacing")
 
-    # Половина шага сетки — квадрат вокруг пересечения,
-    # в него помещается номер хода или пустая клетка.
     half_x = max(8, int(round(dx * 0.45)))
     half_y = max(8, int(round(dy * 0.45)))
 
@@ -689,12 +623,8 @@ class GridMaskRequest(BaseModel):
     grid_size: int = 19
     x_lines: list[float]
     y_lines: list[float]
-    # Толщина полосы, осветляющей линии сетки, в пикселях.
     line_width: int = 5
-    # Режим: "lighten" — поднять яркость к белому, "white" — залить белым.
     mode: str = "lighten"
-    # Для режима lighten: доля подъёма к белому (0..1).
-    # 1.0 = залить белым, 0.0 = не менять.
     lift_factor: float = 0.85
 
 
@@ -745,36 +675,21 @@ async def grid_mask_endpoint(req: GridMaskRequest):
     rgb = np.asarray(image).copy()
     h, w = rgb.shape[:2]
 
-    # Маска линий сетки: 255 там, где линия.
     mask = np.zeros((h, w), dtype=np.uint8)
 
     for x in req.x_lines:
         xi = int(round(x))
         if 0 <= xi < w:
-            cv2.line(
-                mask,
-                (xi, 0),
-                (xi, h - 1),
-                255,
-                req.line_width,
-            )
+            cv2.line(mask, (xi, 0), (xi, h - 1), 255, req.line_width)
 
     for y in req.y_lines:
         yi = int(round(y))
         if 0 <= yi < h:
-            cv2.line(
-                mask,
-                (0, yi),
-                (w - 1, yi),
-                255,
-                req.line_width,
-            )
+            cv2.line(mask, (0, yi), (w - 1, yi), 255, req.line_width)
 
     if req.mode == "white":
         rgb[mask > 0] = 255
     else:
-        # Поднимаем яркость только на пикселях линии:
-        # new = old + (255 - old) * lift_factor.
         lifted = (
             rgb.astype(np.float32)
             + (255.0 - rgb.astype(np.float32)) * req.lift_factor

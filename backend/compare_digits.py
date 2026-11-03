@@ -61,134 +61,133 @@ def _crnn_net():
     return net
 
 
-# def _mask_and_digits(
-#     gray: np.ndarray,
-#     cx: int,
-#     cy: int,
-#     pitch: float,
-# ):
-#     blurred = cv2.GaussianBlur(
-#         gray, (3, 3), 0
-#     )
+def _center_of_mass(img: np.ndarray) -> tuple[float, float]:
+    ys, xs = np.indices(img.shape)
+    total = float(img.sum())
 
-#     _, mask = cv2.threshold(
-#         blurred,
-#         0,
-#         255,
-#         cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU,
-#     )
+    if total <= 0.0:
+        return img.shape[0] / 2.0, img.shape[1] / 2.0
 
-#     # Удаляем предполагаемые линии сетки.
-#     # Только в ветке сегментации: исходный ROI
-#     # для CRNN не изменяем.
-#     line_width = max(
-#         1, int(round(pitch * 0.025))
-#     )
+    cy = float((ys * img).sum()) / total
+    cx = float((xs * img).sum()) / total
+    return cy, cx
 
-#     cv2.line(
-#         mask,
-#         (cx, 0),
-#         (cx, mask.shape[0] - 1),
-#         0,
-#         line_width,
-#     )
 
-#     cv2.line(
-#         mask,
-#         (0, cy),
-#         (mask.shape[1] - 1, cy),
-#         0,
-#         line_width,
-#     )
+def _prepare_mnist_input(mask: np.ndarray) -> np.ndarray:
+    """
+    Приводит маску цифры (uint8, цифра яркая на тёмном фоне)
+    к виду, на котором обучалась onnxmodelzoo/mnist-8:
 
-#     # Частично соединяем разорванные штрихи.
-#     mask = cv2.morphologyEx(
-#         mask,
-#         cv2.MORPH_CLOSE,
-#         np.ones((2, 2), np.uint8),
-#     )
+      - 28x28, grayscale;
+      - цифра белая на чёрном фоне;
+      - бинарные штрихи (0 / 255), без серости;
+      - цифра вписана в 20x20 с сохранением пропорций;
+      - центрирована по центру масс в 28x28.
 
-#     # Убираем мелкий шум.
-#     count, labels, stats, _ = (
-#         cv2.connectedComponentsWithStats(mask, 8)
-#     )
+    Возвращает uint8 (28, 28).
+    """
+    if mask.dtype != np.uint8:
+        mask = mask.astype(np.uint8)
 
-#     cleaned = np.zeros_like(mask)
+    if mask.size == 0:
+        raise ValueError("Empty digit image")
 
-#     min_area = max(
-#         4, int(pitch * pitch * 0.002)
-#     )
+    # 1. Бинаризация: оставляем только чёткие штрихи.
+    _, binary = cv2.threshold(
+        mask, 0, 255,
+        cv2.THRESH_BINARY | cv2.THRESH_OTSU,
+    )
 
-#     for i in range(1, count):
-#         x, y, w, h, area = stats[i]
+    # 2. Обрезка по bbox с запасом 2 px,
+    #    чтобы не отрезать края у 8/0/6/9.
+    ys, xs = np.where(binary > 0)
+    if len(xs) == 0:
+        raise ValueError("Empty after threshold")
 
-#         if (
-#             area >= min_area
-#             and h >= 4
-#             and w <= mask.shape[1] * 0.95
-#         ):
-#             cleaned[labels == i] = 255
+    h, w = binary.shape
+    y1 = max(0, int(ys.min()) - 2)
+    y2 = min(h, int(ys.max()) + 3)
+    x1 = max(0, int(xs.min()) - 2)
+    x2 = min(w, int(xs.max()) + 3)
 
-#     ys, xs = np.where(cleaned > 0)
+    binary = binary[y1:y2, x1:x2]
 
-#     if not len(xs):
-#         return cleaned, [], "blank"
+    h, w = binary.shape
+    if h == 0 or w == 0:
+        raise ValueError("Empty after crop")
 
-#     min_x = int(xs.min())
-#     max_x = int(xs.max()) + 1
+    # 3. Вписать в 20x20, сохраняя пропорции.
+    scale = 20.0 / max(h, w)
+    new_w = max(1, int(round(w * scale)))
+    new_h = max(1, int(round(h * scale)))
 
-#     min_y = int(ys.min())
-#     max_y = int(ys.max()) + 1
+    scaled = cv2.resize(
+        binary,
+        (new_w, new_h),
+        interpolation=cv2.INTER_AREA,
+    )
 
-#     tight = cleaned[
-#         min_y:max_y,
-#         min_x:max_x,
-#     ]
+    # 4. Вставить в центр 28x28.
+    img = np.zeros((28, 28), dtype=np.uint8)
+    oy = (28 - new_h) // 2
+    ox = (28 - new_w) // 2
+    img[oy:oy + new_h, ox:ox + new_w] = scaled
 
-#     # Вертикальная проекция.
-#     occupied = np.any(
-#         tight > 0, axis=0
-#     ).astype(np.int8)
+    # 5. Центрирование по центру масс.
+    cy, cx = _center_of_mass(img)
+    shift_y = 14.0 - cy
+    shift_x = 14.0 - cx
+    M = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+    img = cv2.warpAffine(
+        img, M, (28, 28),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
 
-#     padded = np.pad(occupied, (1, 1))
+    return img
 
-#     starts = np.where(
-#         np.diff(padded) == 1
-#     )[0]
 
-#     ends = np.where(
-#         np.diff(padded) == -1
-#     )[0]
+def _mnist_digit(mask: np.ndarray):
+    """
+    mask: uint8, цифра яркая на тёмном фоне.
 
-#     runs = list(zip(starts, ends))
+    Возвращает (digit_str, confidence, prepared_28x28_uint8).
+    """
+    prepared = _prepare_mnist_input(mask)
 
-#     # Для этого эксперимента допускаем
-#     # от 1 до 3 отдельных цифр.
-#     if not 1 <= len(runs) <= 3:
-#         return (
-#             cleaned,
-#             [],
-#             f"uncertain_split:{len(runs)}",
-#         )
+    # onnxmodelzoo/mnist-8 ожидает float32 [1,1,28,28], x/255.
+    # Никаких mean/std — они не нужны для этой модели.
+    tensor = (
+        prepared.astype(np.float32) / 255.0
+    )[None, None, ...]
 
-#     digits = []
+    session = _mnist_session()
+    input_name = session.get_inputs()[0].name
 
-#     for a, b in runs:
-#         fragment = tight[:, a:b]
+    scores = session.run(
+        None,
+        {input_name: tensor},
+    )[0].reshape(-1)
 
-#         yy, xx = np.where(fragment > 0)
+    if scores.size != 10:
+        raise RuntimeError(
+            f"Unexpected MNIST output: {scores.shape}"
+        )
 
-#         if not len(xx):
-#             return cleaned, [], "empty_segment"
+    # Модель отдаёт логиты. argmax можно брать напрямую,
+    # softmax используем только для confidence.
+    probs = np.exp(scores - scores.max())
+    probs /= probs.sum()
 
-#         digit = fragment[
-#             yy.min():yy.max() + 1,
-#             xx.min():xx.max() + 1,
-#         ]
+    digit = int(probs.argmax())
 
-#         digits.append(digit)
+    return (
+        str(digit),
+        round(float(probs[digit]), 3),
+        prepared,
+    )
 
-#     return cleaned, digits, "ok"
 
 def make_soft_ink(
     gray: np.ndarray,
@@ -208,30 +207,25 @@ def make_soft_ink(
 
     image = gray.astype(np.float32)
 
-    # Яркость бумаги оцениваем по светлым
-    # пикселям самого ROI.
     paper = float(np.percentile(image, 90))
 
-    # Насколько каждый пиксель темнее бумаги.
     darkness = np.maximum(
         paper - image,
         0.0,
     )
 
-    # Небольшое подавление слабых оттенков.
     strength = np.clip(
         (darkness - low) / (high - low),
         0.0,
         1.0,
     )
 
-    # Усиливаем различие между светлыми
-    # линиями и тёмными цифрами.
     strength = np.power(strength, gamma)
 
     return np.round(
         strength * 255
     ).astype(np.uint8)
+
 
 def _mask_and_digits(
     gray: np.ndarray,
@@ -239,8 +233,6 @@ def _mask_and_digits(
     cy: int,
     pitch: float,
 ):
-    # Мягкий контраст, без бинаризации Otsu.
-    # Все оттенки сохраняются.
     ink = make_soft_ink(
         gray,
         gamma=1.5,
@@ -250,12 +242,8 @@ def _mask_and_digits(
 
     h, w = ink.shape
 
-    # Бинарное представление используем
-    # ТОЛЬКО для анализа положения штрихов.
     strong = ink >= 90
 
-    # 1. Не учитываем центральную горизонтальную
-    # линию при построении вертикальной проекции.
     rows = np.ones(h, dtype=bool)
 
     band_y = max(2, round(pitch * 0.045))
@@ -268,16 +256,11 @@ def _mask_and_digits(
     if not np.any(rows):
         return ink, [], "invalid_roi"
 
-    # 2. Вертикальная проекция.
     profile = np.count_nonzero(
         strong[rows, :],
         axis=0,
     ).astype(np.float32)
 
-    # 3. Подавляем предполагаемую вертикальную
-    # линию сетки только в проекции.
-    #
-    # Исходное изображение ink не изменяется!
     band_x = max(1, round(pitch * 0.025))
 
     for x in range(
@@ -287,15 +270,12 @@ def _mask_and_digits(
         if profile[x] > rows.sum() * 0.75:
             profile[x] = 0
 
-    # 4. Лёгкое сглаживание проекции.
     profile = np.convolve(
         profile,
         [0.25, 0.5, 0.25],
         mode="same",
     )
 
-    # 5. Находим столбцы с достаточно
-    # выраженными тёмными штрихами.
     min_signal = max(
         2.0,
         rows.sum() * 0.07,
@@ -326,10 +306,6 @@ def _mask_and_digits(
     if not raw_runs:
         return ink, [], "blank_or_uncertain"
 
-    # 6. Объединяем близкие группы.
-    #
-    # Небольшие разрывы могут возникать
-    # внутри одной и той же цифры.
     max_gap = max(
         2,
         round(pitch * 0.06),
@@ -351,10 +327,6 @@ def _mask_and_digits(
         else:
             merged.append([a, b])
 
-    # 7. Фильтруем слабые изолированные группы.Yt
-    #
-    # Не удаляем их из изображения — только
-    # исключаем из кандидатов сегментации.
     min_width = max(
         2,
         round(pitch * 0.025),
@@ -376,7 +348,6 @@ def _mask_and_digits(
 
         runs.append((a, b))
 
-    # 8. Проверяем количество групп.
     if not runs:
         return ink, [], "no_segments"
 
@@ -390,12 +361,9 @@ def _mask_and_digits(
             f"widths={widths}",
         )
 
-    # 9. Вырезаем фрагменты из исходной
-    # мягкой маски, без удаления линий.
     digits = []
 
     for a, b in runs:
-        # Небольшой запас по горизонтали.
         margin = max(1, round(pitch * 0.02))
 
         left = max(0, a - margin)
@@ -407,8 +375,8 @@ def _mask_and_digits(
 
     return ink, digits, "ok"
 
+
 def _crnn_text(gray: np.ndarray) -> str:
-    # Модель OpenCV Zoo ожидает 100x32.
     blob = cv2.dnn.blobFromImage(
         gray,
         scalefactor=1 / 127.5,
@@ -423,10 +391,6 @@ def _crnn_text(gray: np.ndarray) -> str:
     net.setInput(blob)
     logits = net.forward()
 
-    # Формат выхода этой модели:
-    # [time_steps, 1, 37]
-    # 0 — CTC blank,
-    # 1..36 — цифры и буквы.
     if (
         logits.ndim != 3
         or logits.shape[1] != 1
@@ -455,72 +419,6 @@ def _crnn_text(gray: np.ndarray) -> str:
 
     return "".join(characters)
 
-def _mnist_digit(mask: np.ndarray):
-    h, w = mask.shape
-
-    if h == 0 or w == 0:
-        raise ValueError("Empty digit image")
-
-    # Масштабируем цифру, сохраняя пропорции
-    scale = 20.0 / max(h, w)
-
-    new_w = max(1, round(w * scale))
-    new_h = max(1, round(h * scale))
-
-    scaled = cv2.resize(
-        mask,
-        (new_w, new_h),
-        interpolation=(
-            cv2.INTER_AREA
-            if scale < 1
-            else cv2.INTER_CUBIC
-        ),
-    )
-
-    # MNIST: 28x28, белая цифра на чёрном фоне
-    img = np.zeros(
-        (28, 28),
-        dtype=np.uint8,
-    )
-
-    y = (28 - new_h) // 2
-    x = (28 - new_w) // 2
-
-    img[
-        y:y + new_h,
-        x:x + new_w,
-    ] = scaled
-
-    # Запускаем ONNX-модель
-    session = _mnist_session()
-
-    input_name = session.get_inputs()[0].name
-
-    tensor = (
-        img.astype(np.float32) / 255.0
-    )[None, None, ...]
-
-    scores = session.run(
-        None,
-        {input_name: tensor},
-    )[0].reshape(-1)
-
-    if scores.size != 10:
-        raise RuntimeError(
-            f"Unexpected MNIST output: {scores.shape}"
-        )
-
-    # Преобразуем оценки классов в softmax
-    probs = np.exp(scores - scores.max())
-    probs /= probs.sum()
-
-    digit = int(probs.argmax())
-
-    return (
-        str(digit),
-        round(float(probs[digit]), 3),
-        img,
-    )
 
 def compare_digit_models(
     rectified: Image.Image,
@@ -572,8 +470,6 @@ def compare_digit_models(
 
     radius = max(8, round(0.47 * pitch))
 
-    # По умолчанию рассматриваем всю сетку.
-    # Но можно передать конкретные пересечения.
     places = (
         cells
         if cells is not None
@@ -598,7 +494,6 @@ def compare_digit_models(
         x2 = min(w, cx + radius + 1)
         y2 = min(h, cy + radius + 1)
 
-        # Один исходный ROI для обоих методов.
         roi = gray[y1:y2, x1:x2].copy()
 
         cleaned, digits, status = _mask_and_digits(
@@ -607,9 +502,6 @@ def compare_digit_models(
             cy - y1,
             pitch,
         )
-
-        # Оцениваем количество штрихов ВНЕ центральных
-        # полос сетки, не изменяя само изображение.
 
         roi_h, roi_w = cleaned.shape
 
@@ -643,8 +535,6 @@ def compare_digit_models(
             status,
         ))
 
-    # Если конкретные пересечения не выбраны,
-    # берём области с наибольшим остатком чернил.
     if cells is None:
         proposals.sort(
             reverse=True,
@@ -654,8 +544,6 @@ def compare_digit_models(
 
     comparisons = []
 
-    # Защита от одновременного запуска
-    # тяжёлых сравнений в одном процессе.
     with _LOCK:
         started = perf_counter()
 
@@ -672,7 +560,6 @@ def compare_digit_models(
             status,
         ) in proposals:
 
-            # Подход A: сегментация + MNIST.
             recognized = []
             scores = []
             digit_images = []
@@ -687,10 +574,9 @@ def compare_digit_models(
                     scores.append(conf)
 
                     digit_images.append(
-                        _png_b64(255 - mnist_img)
+                        _png_b64(mnist_img)
                     )
 
-            # Подход B: CRNN на исходном ROI.
             crnn_text = _crnn_text(roi)
 
             comparisons.append({
