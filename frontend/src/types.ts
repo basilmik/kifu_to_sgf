@@ -129,5 +129,5 @@ export interface GridMaskResponse {
   masked_png_b64: string;
   mode: string;
   line_width: number;
-  dim_factor: number;
+  lift_factor: number;
 }

@@ -619,12 +619,13 @@ class GridMaskRequest(BaseModel):
     grid_size: int = 19
     x_lines: list[float]
     y_lines: list[float]
-    # Толщина полосы, ослабляющей линии сетки, в пикселях.
+    # Толщина полосы, осветляющей линии сетки, в пикселях.
     line_width: int = 5
-    # Режим: "dim" — уменьшить яркость, "white" — залить белым.
-    mode: str = "dim"
-    # Для режима dim: во сколько раз ослабить яркость (0..1).
-    dim_factor: float = 0.35
+    # Режим: "lighten" — поднять яркость к белому, "white" — залить белым.
+    mode: str = "lighten"
+    # Для режима lighten: доля подъёма к белому (0..1).
+    # 1.0 = залить белым, 0.0 = не менять.
+    lift_factor: float = 0.85
 
 
 @app.post("/api/grid-mask")
@@ -638,14 +639,14 @@ async def grid_mask_endpoint(req: GridMaskRequest):
     ):
         raise HTTPException(422, "invalid grid lines")
 
-    if req.mode not in ("dim", "white"):
+    if req.mode not in ("lighten", "white"):
         raise HTTPException(422, "invalid mode")
 
     if req.line_width < 1 or req.line_width > 50:
         raise HTTPException(422, "invalid line_width")
 
-    if not 0.0 <= req.dim_factor <= 1.0:
-        raise HTTPException(422, "invalid dim_factor")
+    if not 0.0 <= req.lift_factor <= 1.0:
+        raise HTTPException(422, "invalid lift_factor")
 
     if len(req.rectified_png_b64) > 60_000_000:
         raise HTTPException(413, "image payload too large")
@@ -702,10 +703,14 @@ async def grid_mask_endpoint(req: GridMaskRequest):
     if req.mode == "white":
         rgb[mask > 0] = 255
     else:
-        # Уменьшаем яркость только на пикселях линии.
-        # Остальные каналы не трогаем, чтобы не сдвигать оттенок.
-        dimmed = (rgb.astype(np.float32) * req.dim_factor).astype(np.uint8)
-        rgb[mask > 0] = dimmed[mask > 0]
+        # Поднимаем яркость только на пикселях линии:
+        # new = old + (255 - old) * lift_factor.
+        # Чёрные штрихи становятся светлее, светлые — почти белыми.
+        lifted = (
+            rgb.astype(np.float32)
+            + (255.0 - rgb.astype(np.float32)) * req.lift_factor
+        ).astype(np.uint8)
+        rgb[mask > 0] = lifted[mask > 0]
 
     out = Image.fromarray(rgb, mode="RGB")
 
@@ -715,5 +720,5 @@ async def grid_mask_endpoint(req: GridMaskRequest):
         "masked_png_b64": _png_b64(out),
         "mode": req.mode,
         "line_width": req.line_width,
-        "dim_factor": req.dim_factor,
+        "lift_factor": req.lift_factor,
     }

@@ -222,8 +222,8 @@ export async function maskGridLines(
   grid: GridResponse,
   options?: {
     line_width?: number;
-    mode?: "dim" | "white";
-    dim_factor?: number;
+    mode?: "lighten" | "white";
+    lift_factor?: number;
   }
 ): Promise<GridMaskResponse> {
   if (!grid.rectified_png_b64) {
@@ -243,8 +243,8 @@ export async function maskGridLines(
         x_lines: grid.x_lines,
         y_lines: grid.y_lines,
         line_width: options?.line_width ?? 5,
-        mode: options?.mode ?? "dim",
-        dim_factor: options?.dim_factor ?? 0.35,
+        mode: options?.mode ?? "lighten",
+        lift_factor: options?.lift_factor ?? 0.85,
       }),
     }
   );

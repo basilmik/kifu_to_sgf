@@ -54,9 +54,9 @@ export default function App() {
   const [maskProcessing, setMaskProcessing] = useState(false);
   const [maskResult, setMaskResult] =
     useState<GridMaskResponse | null>(null);
-  const [maskMode, setMaskMode] = useState<"dim" | "white">("dim");
+  const [maskMode, setMaskMode] = useState<"lighten" | "white">("lighten");
   const [maskWidth, setMaskWidth] = useState(5);
-  const [maskDimFactor, setMaskDimFactor] = useState(0.35);
+  const [maskLiftFactor, setMaskLiftFactor] = useState(0.85);
 
   // Необязательный выбор конкретного пересечения.
   const [testRow, setTestRow] = useState("");
@@ -270,7 +270,7 @@ export default function App() {
       const result = await maskGridLines(gridResult, {
         line_width: maskWidth,
         mode: maskMode,
-        dim_factor: maskDimFactor,
+        lift_factor: maskLiftFactor,
       });
       setMaskResult(result);
     } catch (e) {
@@ -539,17 +539,17 @@ export default function App() {
                 alignItems: "center",
               }}
             >
-              <b>Убрать сетку:</b>
+              <b>Осветлить сетку:</b>
 
               <label>
                 режим{" "}
                 <select
                   value={maskMode}
                   onChange={(e) =>
-                    setMaskMode(e.target.value as "dim" | "white")
+                    setMaskMode(e.target.value as "lighten" | "white")
                   }
                 >
-                  <option value="dim">dim (уменьшить яркость)</option>
+                  <option value="lighten">lighten (к белому)</option>
                   <option value="white">white (залить белым)</option>
                 </select>
               </label>
@@ -569,15 +569,15 @@ export default function App() {
               </label>
 
               <label>
-                dim factor{" "}
+                lift factor{" "}
                 <input
                   type="number"
                   min={0}
                   max={1}
                   step={0.05}
-                  value={maskDimFactor}
+                  value={maskLiftFactor}
                   onChange={(e) =>
-                    setMaskDimFactor(Number(e.target.value))
+                    setMaskLiftFactor(Number(e.target.value))
                   }
                   style={{ width: 70 }}
                 />
