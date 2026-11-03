@@ -10,7 +10,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.concurrency import run_in_threadpool
 from ocr_baseline import recognize_numbers, compare_ocr
-from compare_digits import compare_digit_models
+from compare_digits import compare_digit_models, _mnist_digit
 from PIL import Image
 
 from _kifu_core import detect_board, detect_board_debug, reverse, rectify_grid
@@ -470,6 +470,46 @@ class ExtractCellsRequest(BaseModel):
     y_lines: list[float]
 
 
+def _mnist_predict_cell(crop: "np.ndarray"):
+    """
+    Прогоняет один кроп через MNIST.
+    Возвращает (digit, confidence) или (None, None) для пустого кропа.
+    """
+    import numpy as np
+    import cv2
+
+    if crop.size == 0:
+        return None, None
+
+    # Проверяем, есть ли вообще "чернила" в кропе.
+    # Порог мягкий, чтобы не отсечь светлые цифры.
+    if float(crop.mean()) >= 250.0 and float(crop.std()) < 2.0:
+        return None, None
+
+    # Приводим к формату, который ожидает _mnist_digit:
+    # белая цифра на чёрном фоне.
+    # _mnist_digit ожидает маску, где цифра яркая.
+    # Инвертируем: тёмные штрихи становятся белыми.
+    inverted = 255 - crop
+
+    # Обрезаем по содержимому, чтобы убрать пустые поля.
+    ys, xs = np.where(inverted > 32)
+    if len(xs) == 0:
+        return None, None
+
+    x1, x2 = int(xs.min()), int(xs.max()) + 1
+    y1, y2 = int(ys.min()), int(ys.max()) + 1
+
+    if x2 - x1 < 2 or y2 - y1 < 2:
+        return None, None
+
+    tight = inverted[y1:y2, x1:x2]
+
+    digit_str, conf, _ = _mnist_digit(tight)
+
+    return digit_str, float(conf)
+
+
 @app.post("/api/extract-cells")
 async def extract_cells_endpoint(req: ExtractCellsRequest):
     if req.grid_size not in (9, 13, 19):
@@ -520,42 +560,56 @@ async def extract_cells_endpoint(req: ExtractCellsRequest):
     half_x = max(8, int(round(dx * 0.45)))
     half_y = max(8, int(round(dy * 0.45)))
 
-    cells = []
+    def _build_cells():
+        out = []
 
-    for row in range(req.grid_size):
-        for col in range(req.grid_size):
-            cx = int(round(req.x_lines[col]))
-            cy = int(round(req.y_lines[row]))
+        for row in range(req.grid_size):
+            for col in range(req.grid_size):
+                cx = int(round(req.x_lines[col]))
+                cy = int(round(req.y_lines[row]))
 
-            x1 = max(0, cx - half_x)
-            y1 = max(0, cy - half_y)
-            x2 = min(w, cx + half_x + 1)
-            y2 = min(h, cy + half_y + 1)
+                x1 = max(0, cx - half_x)
+                y1 = max(0, cy - half_y)
+                x2 = min(w, cx + half_x + 1)
+                y2 = min(h, cy + half_y + 1)
 
-            if x2 <= x1 or y2 <= y1:
-                cells.append({
+                if x2 <= x1 or y2 <= y1:
+                    out.append({
+                        "row": row,
+                        "col": col,
+                        "width": 0,
+                        "height": 0,
+                        "png_b64": "",
+                        "mnist_digit": None,
+                        "mnist_confidence": None,
+                    })
+                    continue
+
+                crop = gray[y1:y2, x1:x2].copy()
+
+                try:
+                    digit_str, conf = _mnist_predict_cell(crop)
+                except Exception:
+                    digit_str, conf = None, None
+
+                ok, png = cv2.imencode(".png", crop)
+
+                if not ok:
+                    raise HTTPException(500, "cannot encode cell")
+
+                out.append({
                     "row": row,
                     "col": col,
-                    "width": 0,
-                    "height": 0,
-                    "png_b64": "",
+                    "width": int(crop.shape[1]),
+                    "height": int(crop.shape[0]),
+                    "png_b64": base64.b64encode(png.tobytes()).decode("ascii"),
+                    "mnist_digit": digit_str,
+                    "mnist_confidence": conf,
                 })
-                continue
 
-            crop = gray[y1:y2, x1:x2].copy()
+        return out
 
-            ok, png = cv2.imencode(".png", crop)
-
-            if not ok:
-                raise HTTPException(500, "cannot encode cell")
-
-            cells.append({
-                "row": row,
-                "col": col,
-                "width": int(crop.shape[1]),
-                "height": int(crop.shape[0]),
-                "png_b64": base64.b64encode(png.tobytes()).decode("ascii"),
-            })
+    cells = await run_in_threadpool(_build_cells)
 
     return {
         "grid_size": req.grid_size,

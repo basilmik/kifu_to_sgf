@@ -132,6 +132,7 @@ export interface DigitComparisonResponse {
   elapsed_ms: number;
 }
 
+
 export interface ExtractCellsResponse {
   grid_size: number;
   cells: {
@@ -140,5 +141,7 @@ export interface ExtractCellsResponse {
     width: number;
     height: number;
     png_b64: string;
+    mnist_digit: string | null;
+    mnist_confidence: number | null;
   }[];
 }

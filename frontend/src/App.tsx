@@ -887,9 +887,20 @@ export default function App() {
                           fontSize: 10,
                           textAlign: "center",
                           color: "#666",
+                          lineHeight: 1.25,
                         }}
                       >
-                        {c.row},{c.col}
+                        <div>
+                          {c.row},{c.col}
+                        </div>
+                        <div>
+                          {c.height}×{c.width}px
+                        </div>
+                        <div>
+                          {c.mnist_digit !== null
+                            ? `${c.mnist_digit} (${c.mnist_confidence!.toFixed(2)})`
+                            : "—"}
+                        </div>
                       </figcaption>
                     </figure>
                   ))}
