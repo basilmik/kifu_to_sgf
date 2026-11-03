@@ -5,7 +5,8 @@ import type {
   RecognitionResponse,
   GridResponse,
   OCRComparisonResponse,
-  DigitComparisonResponse
+  DigitComparisonResponse,
+  ExtractCellsResponse,
 } from "./types";
 
 export async function processImage(file: File): Promise<ProcessResponse> {
@@ -181,4 +182,37 @@ export async function compareDigitApproaches(
   }
 
   return response.json();
+}
+
+export async function extractGridCells(
+  grid: GridResponse
+): Promise<ExtractCellsResponse> {
+  if (!grid.rectified_png_b64) {
+    throw new Error("Нет выпрямленного изображения");
+  }
+
+  const response = await fetch(
+    "/api/extract-cells",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        rectified_png_b64: grid.rectified_png_b64,
+        grid_size: grid.grid_size,
+        x_lines: grid.x_lines,
+        y_lines: grid.y_lines,
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Extract cells failed (${response.status}): ` +
+      await response.text()
+    );
+  }
+
+  return response.json() as Promise<ExtractCellsResponse>;
 }

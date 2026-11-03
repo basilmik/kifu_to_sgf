@@ -1,7 +1,8 @@
 import { useEffect, useState, } from "react";
 import { b64ToDataUrl, debugDetect, 
   detectBoard, processImage, detectGrid, 
-  recognizeGrid, compareGridOCR, compareDigitApproaches} from "./api";
+  recognizeGrid, compareGridOCR, compareDigitApproaches,
+  extractGridCells } from "./api";
 import type {
   DebugDetectResponse,
   DetectBoardResponse,
@@ -10,6 +11,7 @@ import type {
   RecognitionResponse,
   OCRComparisonResponse,
   DigitComparisonResponse,
+  ExtractCellsResponse,
 } from "./types";
 
 export default function App() {
@@ -44,6 +46,10 @@ export default function App() {
   const [digitComparison, setDigitComparison] =
     useState<DigitComparisonResponse | null>(null);
 
+  const [cellsProcessing, setCellsProcessing] = useState(false);
+  const [cellsResult, setCellsResult] =
+    useState<ExtractCellsResponse | null>(null);
+
   // Необязательный выбор конкретного пересечения.
   const [testRow, setTestRow] = useState("");
   const [testCol, setTestCol] = useState("");
@@ -70,6 +76,7 @@ export default function App() {
     setOcrResult(null);
     setComparisonResult(null);
     setDigitComparison(null);
+    setCellsResult(null);
   }
 
   async function onReverse() {
@@ -105,6 +112,7 @@ export default function App() {
     setOcrResult(null);
     setComparisonResult(null);
     setDigitComparison(null);
+    setCellsResult(null);
     try {
       const result = await detectGrid(file);
       setGridResult(result);
@@ -219,6 +227,25 @@ export default function App() {
       );
     } finally {
       setDigitComparing(false);
+    }
+  }
+
+  async function onExtractCells() {
+    if (!gridResult?.found) return;
+
+    setCellsProcessing(true);
+    setCellsResult(null);
+    setError(null);
+
+    try {
+      const result = await extractGridCells(gridResult);
+      setCellsResult(result);
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : String(e)
+      );
+    } finally {
+      setCellsProcessing(false);
     }
   }
 
@@ -782,6 +809,92 @@ export default function App() {
                   </table>
                 </div>
               </>
+            )}
+          </section>
+        )}
+
+        {gridResult?.found && gridResult.rectified_png_b64 && (
+          <section
+            style={{
+              marginTop: 24,
+              paddingTop: 16,
+              borderTop: "2px solid #ddd",
+            }}
+          >
+            <h2>Вырезанные квадратики</h2>
+
+            <button
+              onClick={onExtractCells}
+              disabled={cellsProcessing || gridProcessing}
+            >
+              {cellsProcessing
+                ? "Вырезаем..."
+                : "Вырезать квадратики"}
+            </button>
+
+            {cellsResult && (
+              <div style={{ marginTop: 20 }}>
+                <p>
+                  <b>Размер сетки:</b>{" "}
+                  {cellsResult.grid_size}×{cellsResult.grid_size}
+                  <br />
+                  <b>Вырезано:</b>{" "}
+                  {cellsResult.cells.length}
+                </p>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: `repeat(${cellsResult.grid_size}, minmax(0, 1fr))`,
+                    gap: 2,
+                    maxWidth: 900,
+                    marginTop: 12,
+                  }}
+                >
+                  {cellsResult.cells.map((c) => (
+                    <figure
+                      key={`${c.row}-${c.col}`}
+                      style={{
+                        margin: 0,
+                        padding: 2,
+                        border: "1px solid #ccc",
+                        background: "#fafafa",
+                      }}
+                      title={`row=${c.row}, col=${c.col}`}
+                    >
+                      {c.png_b64 ? (
+                        <img
+                          src={b64ToDataUrl(c.png_b64)}
+                          alt={`cell ${c.row}-${c.col}`}
+                          style={{
+                            width: "100%",
+                            height: "auto",
+                            display: "block",
+                            imageRendering: "pixelated",
+                          }}
+                        />
+                      ) : (
+                        <div
+                          style={{
+                            width: "100%",
+                            aspectRatio: "1 / 1",
+                            background: "#eee",
+                          }}
+                        />
+                      )}
+                      <figcaption
+                        style={{
+                          fontSize: 10,
+                          textAlign: "center",
+                          color: "#666",
+                        }}
+                      >
+                        {c.row},{c.col}
+                      </figcaption>
+                    </figure>
+                  ))}
+                </div>
+              </div>
             )}
           </section>
         )}

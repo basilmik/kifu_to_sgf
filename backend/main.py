@@ -2,6 +2,8 @@ import base64
 import io
 
 import binascii
+import json
+import math
 
 from pydantic import BaseModel
 from fastapi import FastAPI, File, HTTPException, UploadFile, Form
@@ -459,3 +461,103 @@ async def compare_digit_models_endpoint(
 
     except ValueError as e:
         raise HTTPException(422, str(e))
+
+
+class ExtractCellsRequest(BaseModel):
+    rectified_png_b64: str
+    grid_size: int = 19
+    x_lines: list[float]
+    y_lines: list[float]
+
+
+@app.post("/api/extract-cells")
+async def extract_cells_endpoint(req: ExtractCellsRequest):
+    if req.grid_size not in (9, 13, 19):
+        raise HTTPException(422, "invalid grid size")
+
+    if (
+        len(req.x_lines) != req.grid_size
+        or len(req.y_lines) != req.grid_size
+    ):
+        raise HTTPException(422, "invalid grid lines")
+
+    if len(req.rectified_png_b64) > 60_000_000:
+        raise HTTPException(413, "image payload too large")
+
+    try:
+        raw = base64.b64decode(
+            req.rectified_png_b64,
+            validate=True,
+        )
+
+        with Image.open(io.BytesIO(raw)) as source:
+            if source.format != "PNG":
+                raise ValueError("expected PNG image")
+
+            if max(source.size) > 6000:
+                raise ValueError("image is too large")
+
+            image = source.convert("RGB")
+
+    except (ValueError, binascii.Error, OSError) as e:
+        raise HTTPException(400, f"invalid image: {e}")
+
+    import numpy as np
+    import cv2
+
+    gray = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2GRAY)
+
+    h, w = gray.shape
+
+    dx = float(np.median(np.diff(req.x_lines)))
+    dy = float(np.median(np.diff(req.y_lines)))
+
+    if dx <= 0 or dy <= 0:
+        raise HTTPException(422, "invalid grid spacing")
+
+    # Половина шага сетки — квадрат вокруг пересечения,
+    # в него помещается номер хода или пустая клетка.
+    half_x = max(8, int(round(dx * 0.45)))
+    half_y = max(8, int(round(dy * 0.45)))
+
+    cells = []
+
+    for row in range(req.grid_size):
+        for col in range(req.grid_size):
+            cx = int(round(req.x_lines[col]))
+            cy = int(round(req.y_lines[row]))
+
+            x1 = max(0, cx - half_x)
+            y1 = max(0, cy - half_y)
+            x2 = min(w, cx + half_x + 1)
+            y2 = min(h, cy + half_y + 1)
+
+            if x2 <= x1 or y2 <= y1:
+                cells.append({
+                    "row": row,
+                    "col": col,
+                    "width": 0,
+                    "height": 0,
+                    "png_b64": "",
+                })
+                continue
+
+            crop = gray[y1:y2, x1:x2].copy()
+
+            ok, png = cv2.imencode(".png", crop)
+
+            if not ok:
+                raise HTTPException(500, "cannot encode cell")
+
+            cells.append({
+                "row": row,
+                "col": col,
+                "width": int(crop.shape[1]),
+                "height": int(crop.shape[0]),
+                "png_b64": base64.b64encode(png.tobytes()).decode("ascii"),
+            })
+
+    return {
+        "grid_size": req.grid_size,
+        "cells": cells,
+    }

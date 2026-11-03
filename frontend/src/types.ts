@@ -131,3 +131,14 @@ export interface DigitComparisonResponse {
   comparisons: DigitComparison[];
   elapsed_ms: number;
 }
+
+export interface ExtractCellsResponse {
+  grid_size: number;
+  cells: {
+    row: number;
+    col: number;
+    width: number;
+    height: number;
+    png_b64: string;
+  }[];
+}
