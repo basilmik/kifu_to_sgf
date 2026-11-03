@@ -63,6 +63,14 @@ def _png_b64(img: Image.Image) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def _np_png_b64(arr) -> str:
+    import cv2
+    ok, png = cv2.imencode(".png", arr)
+    if not ok:
+        return ""
+    return base64.b64encode(png.tobytes()).decode("ascii")
+
+
 @app.post("/api/process")
 async def process(file: UploadFile = File(...)):
     if file.content_type not in ("image/jpeg", "image/png"):
@@ -470,41 +478,84 @@ class ExtractCellsRequest(BaseModel):
     y_lines: list[float]
 
 
-def _mnist_predict_cell(crop):
+def _mnist_predict_cell_with_debug(crop):
     """
     Прогоняет один кроп через MNIST.
-    Возвращает (digit, confidence) или (None, None) для пустого кропа.
+    Возвращает (digit, confidence, debug) где debug — словарь
+    с base64 PNG промежуточных стадий: crop, inverted, tight.
+    Для пустого кропа возвращает (None, None, None).
     """
     import numpy as np
+    import cv2
 
     if crop.size == 0:
-        return None, None
+        return None, None, None
+
+    crop_b64 = _np_png_b64(crop)
 
     # Проверяем, есть ли вообще "чернила" в кропе.
-    # Порог мягкий, чтобы не отсечь светлые цифры.
     if float(crop.mean()) >= 250.0 and float(crop.std()) < 2.0:
-        return None, None
+        return None, None, {
+            "crop_png_b64": crop_b64,
+            "inverted_png_b64": "",
+            "tight_png_b64": "",
+            "tight_w": 0,
+            "tight_h": 0,
+            "note": "empty_crop",
+        }
 
     # _mnist_digit ожидает маску, где цифра яркая на тёмном фоне.
-    # Инвертируем: тёмные штрихи становятся белыми.
     inverted = 255 - crop
+    inverted_b64 = _np_png_b64(inverted)
 
     # Обрезаем по содержимому, чтобы убрать пустые поля.
     ys, xs = np.where(inverted > 32)
     if len(xs) == 0:
-        return None, None
+        return None, None, {
+            "crop_png_b64": crop_b64,
+            "inverted_png_b64": inverted_b64,
+            "tight_png_b64": "",
+            "tight_w": 0,
+            "tight_h": 0,
+            "note": "no_ink",
+        }
 
     x1, x2 = int(xs.min()), int(xs.max()) + 1
     y1, y2 = int(ys.min()), int(ys.max()) + 1
 
     if x2 - x1 < 2 or y2 - y1 < 2:
-        return None, None
+        return None, None, {
+            "crop_png_b64": crop_b64,
+            "inverted_png_b64": inverted_b64,
+            "tight_png_b64": "",
+            "tight_w": int(x2 - x1),
+            "tight_h": int(y2 - y1),
+            "note": "tight_too_small",
+        }
 
     tight = inverted[y1:y2, x1:x2]
+    tight_b64 = _np_png_b64(tight)
 
-    digit_str, conf, _ = _mnist_digit(tight)
+    try:
+        digit_str, conf, _ = _mnist_digit(tight)
+    except Exception:
+        return None, None, {
+            "crop_png_b64": crop_b64,
+            "inverted_png_b64": inverted_b64,
+            "tight_png_b64": tight_b64,
+            "tight_w": int(tight.shape[1]),
+            "tight_h": int(tight.shape[0]),
+            "note": "mnist_error",
+        }
 
-    return digit_str, float(conf)
+    return digit_str, float(conf), {
+        "crop_png_b64": crop_b64,
+        "inverted_png_b64": inverted_b64,
+        "tight_png_b64": tight_b64,
+        "tight_w": int(tight.shape[1]),
+        "tight_h": int(tight.shape[0]),
+        "note": "ok",
+    }
 
 
 @app.post("/api/extract-cells")
@@ -562,11 +613,8 @@ async def extract_cells_endpoint(req: ExtractCellsRequest):
 
         for row in range(req.grid_size):
             for col in range(req.grid_size):
-                # cx = int(round(req.x_lines[col]))
-                # cy = int(round(req.y_lines[row]))
                 dx_shift = 0.5
                 dy_shift = 0.5
-            
 
                 cx = int(round(req.x_lines[col] + dx_shift * dx))
                 cy = int(round(req.y_lines[row] - dy_shift * dy))
@@ -585,22 +633,24 @@ async def extract_cells_endpoint(req: ExtractCellsRequest):
                         "png_b64": "",
                         "mnist_digit": None,
                         "mnist_confidence": None,
+                        "crop_png_b64": "",
+                        "inverted_png_b64": "",
+                        "tight_png_b64": "",
+                        "tight_w": 0,
+                        "tight_h": 0,
+                        "note": "empty",
                     })
                     continue
 
                 crop = gray[y1:y2, x1:x2].copy()
 
-                try:
-                    digit_str, conf = _mnist_predict_cell(crop)
-                except Exception:
-                    digit_str, conf = None, None
-
                 ok, png = cv2.imencode(".png", crop)
-
                 if not ok:
                     raise HTTPException(500, "cannot encode cell")
 
-                out.append({
+                digit_str, conf, debug = _mnist_predict_cell_with_debug(crop)
+
+                item = {
                     "row": row,
                     "col": col,
                     "width": int(crop.shape[1]),
@@ -608,7 +658,21 @@ async def extract_cells_endpoint(req: ExtractCellsRequest):
                     "png_b64": base64.b64encode(png.tobytes()).decode("ascii"),
                     "mnist_digit": digit_str,
                     "mnist_confidence": conf,
-                })
+                }
+
+                if debug is None:
+                    item.update({
+                        "crop_png_b64": "",
+                        "inverted_png_b64": "",
+                        "tight_png_b64": "",
+                        "tight_w": 0,
+                        "tight_h": 0,
+                        "note": "empty",
+                    })
+                else:
+                    item.update(debug)
+
+                out.append(item)
 
         return out
 
@@ -711,7 +775,6 @@ async def grid_mask_endpoint(req: GridMaskRequest):
     else:
         # Поднимаем яркость только на пикселях линии:
         # new = old + (255 - old) * lift_factor.
-        # Чёрные штрихи становятся светлее, светлые — почти белыми.
         lifted = (
             rgb.astype(np.float32)
             + (255.0 - rgb.astype(np.float32)) * req.lift_factor

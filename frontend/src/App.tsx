@@ -615,7 +615,7 @@ export default function App() {
 
             {cellsResult && (
               <div style={{ marginTop: 20 }}>
-                <h3>Вырезанные квадратики</h3>
+                <h3>Вырезанные квадратики (debug)</h3>
                 <p>
                   <b>Размер сетки:</b>{" "}
                   {cellsResult.grid_size}×{cellsResult.grid_size}
@@ -629,7 +629,7 @@ export default function App() {
                     display: "grid",
                     gridTemplateColumns: `repeat(${cellsResult.grid_size}, minmax(0, 1fr))`,
                     gap: 2,
-                    maxWidth: 900,
+                    maxWidth: 1100,
                     marginTop: 12,
                   }}
                 >
@@ -642,12 +642,12 @@ export default function App() {
                         border: "1px solid #ccc",
                         background: "#fafafa",
                       }}
-                      title={`row=${c.row}, col=${c.col}`}
+                      title={`row=${c.row}, col=${c.col} — ${c.note}`}
                     >
-                      {c.png_b64 ? (
+                      {c.crop_png_b64 ? (
                         <img
-                          src={b64ToDataUrl(c.png_b64)}
-                          alt={`cell ${c.row}-${c.col}`}
+                          src={b64ToDataUrl(c.crop_png_b64)}
+                          alt={`crop ${c.row}-${c.col}`}
                           style={{
                             width: "100%",
                             height: "auto",
@@ -664,6 +664,56 @@ export default function App() {
                           }}
                         />
                       )}
+
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "1fr 1fr",
+                          gap: 2,
+                          marginTop: 2,
+                        }}
+                      >
+                        <div>
+                          {c.inverted_png_b64 ? (
+                            <img
+                              src={b64ToDataUrl(c.inverted_png_b64)}
+                              alt="inverted"
+                              style={{
+                                width: "100%",
+                                height: "auto",
+                                display: "block",
+                                imageRendering: "pixelated",
+                              }}
+                            />
+                          ) : (
+                            <div style={{ aspectRatio: "1 / 1", background: "#eee" }} />
+                          )}
+                          <div style={{ fontSize: 9, textAlign: "center", color: "#666" }}>
+                            inv
+                          </div>
+                        </div>
+
+                        <div>
+                          {c.tight_png_b64 ? (
+                            <img
+                              src={b64ToDataUrl(c.tight_png_b64)}
+                              alt="tight"
+                              style={{
+                                width: "100%",
+                                height: "auto",
+                                display: "block",
+                                imageRendering: "pixelated",
+                              }}
+                            />
+                          ) : (
+                            <div style={{ aspectRatio: "1 / 1", background: "#eee" }} />
+                          )}
+                          <div style={{ fontSize: 9, textAlign: "center", color: "#666" }}>
+                            tight {c.tight_h}×{c.tight_w}
+                          </div>
+                        </div>
+                      </div>
+
                       <figcaption
                         style={{
                           fontSize: 10,
@@ -682,6 +732,9 @@ export default function App() {
                           {c.mnist_digit !== null
                             ? `${c.mnist_digit} (${c.mnist_confidence!.toFixed(2)})`
                             : "—"}
+                        </div>
+                        <div style={{ color: "#999" }}>
+                          {c.note}
                         </div>
                       </figcaption>
                     </figure>

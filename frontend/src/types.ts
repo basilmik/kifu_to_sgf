@@ -120,6 +120,13 @@ export interface ExtractCellsResponse {
     png_b64: string;
     mnist_digit: string | null;
     mnist_confidence: number | null;
+
+    crop_png_b64: string;
+    inverted_png_b64: string;
+    tight_png_b64: string;
+    tight_w: number;
+    tight_h: number;
+    note: string;
   }[];
 }
 
