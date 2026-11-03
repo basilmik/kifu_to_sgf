@@ -692,8 +692,8 @@ async def extract_cells_endpoint(req: ExtractCellsRequest):
 
         for row in range(req.grid_size):
             for col in range(req.grid_size):
-                dx_shift = 0.5
-                dy_shift = 0.5
+                dx_shift = 0
+                dy_shift = 0
 
                 cx = int(round(req.x_lines[col] + dx_shift * dx))
                 cy = int(round(req.y_lines[row] - dy_shift * dy))
