@@ -2,7 +2,7 @@ import { useEffect, useState, } from "react";
 import { b64ToDataUrl, debugDetect, 
   detectBoard, processImage, detectGrid, 
   recognizeGrid, compareGridOCR, compareDigitApproaches,
-  extractGridCells } from "./api";
+  extractGridCells, maskGridLines } from "./api";
 import type {
   DebugDetectResponse,
   DetectBoardResponse,
@@ -12,6 +12,7 @@ import type {
   OCRComparisonResponse,
   DigitComparisonResponse,
   ExtractCellsResponse,
+  GridMaskResponse,
 } from "./types";
 
 export default function App() {
@@ -50,6 +51,13 @@ export default function App() {
   const [cellsResult, setCellsResult] =
     useState<ExtractCellsResponse | null>(null);
 
+  const [maskProcessing, setMaskProcessing] = useState(false);
+  const [maskResult, setMaskResult] =
+    useState<GridMaskResponse | null>(null);
+  const [maskMode, setMaskMode] = useState<"dim" | "white">("dim");
+  const [maskWidth, setMaskWidth] = useState(5);
+  const [maskDimFactor, setMaskDimFactor] = useState(0.35);
+
   // Необязательный выбор конкретного пересечения.
   const [testRow, setTestRow] = useState("");
   const [testCol, setTestCol] = useState("");
@@ -77,6 +85,7 @@ export default function App() {
     setComparisonResult(null);
     setDigitComparison(null);
     setCellsResult(null);
+    setMaskResult(null);
   }
 
   async function onReverse() {
@@ -113,6 +122,7 @@ export default function App() {
     setComparisonResult(null);
     setDigitComparison(null);
     setCellsResult(null);
+    setMaskResult(null);
     try {
       const result = await detectGrid(file);
       setGridResult(result);
@@ -246,6 +256,29 @@ export default function App() {
       );
     } finally {
       setCellsProcessing(false);
+    }
+  }
+
+  async function onMaskGrid() {
+    if (!gridResult?.found) return;
+
+    setMaskProcessing(true);
+    setMaskResult(null);
+    setError(null);
+
+    try {
+      const result = await maskGridLines(gridResult, {
+        line_width: maskWidth,
+        mode: maskMode,
+        dim_factor: maskDimFactor,
+      });
+      setMaskResult(result);
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : String(e)
+      );
+    } finally {
+      setMaskProcessing(false);
     }
   }
 
@@ -472,6 +505,90 @@ export default function App() {
                   </svg>
                 </figure>
               )}
+
+              {/* Выпрямленная доска без сетки */}
+              {maskResult && (
+                <figure style={{ margin: 0 }}>
+                  <figcaption style={{ marginBottom: 8 }}>
+                    Выпрямленная доска без сетки ({maskResult.mode})
+                  </figcaption>
+
+                  <img
+                    src={b64ToDataUrl(maskResult.masked_png_b64)}
+                    alt="masked"
+                    style={{
+                      width: "100%",
+                      height: "auto",
+                      border: "1px solid #ccc",
+                      display: "block",
+                    }}
+                  />
+                </figure>
+              )}
+            </div>
+
+            <div
+              style={{
+                marginTop: 20,
+                padding: 12,
+                border: "1px solid #ddd",
+                borderRadius: 6,
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 12,
+                alignItems: "center",
+              }}
+            >
+              <b>Убрать сетку:</b>
+
+              <label>
+                режим{" "}
+                <select
+                  value={maskMode}
+                  onChange={(e) =>
+                    setMaskMode(e.target.value as "dim" | "white")
+                  }
+                >
+                  <option value="dim">dim (уменьшить яркость)</option>
+                  <option value="white">white (залить белым)</option>
+                </select>
+              </label>
+
+              <label>
+                толщина, px{" "}
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={maskWidth}
+                  onChange={(e) =>
+                    setMaskWidth(Number(e.target.value) || 1)
+                  }
+                  style={{ width: 70 }}
+                />
+              </label>
+
+              <label>
+                dim factor{" "}
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={maskDimFactor}
+                  onChange={(e) =>
+                    setMaskDimFactor(Number(e.target.value))
+                  }
+                  style={{ width: 70 }}
+                />
+              </label>
+
+              <button
+                onClick={onMaskGrid}
+                disabled={maskProcessing || gridProcessing}
+              >
+                {maskProcessing ? "Обрабатываем..." : "Применить маску"}
+              </button>
             </div>
           </div>
         )}

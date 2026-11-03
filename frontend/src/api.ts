@@ -7,6 +7,7 @@ import type {
   OCRComparisonResponse,
   DigitComparisonResponse,
   ExtractCellsResponse,
+  GridMaskResponse,
 } from "./types";
 
 export async function processImage(file: File): Promise<ProcessResponse> {
@@ -215,4 +216,45 @@ export async function extractGridCells(
   }
 
   return response.json() as Promise<ExtractCellsResponse>;
+}
+
+export async function maskGridLines(
+  grid: GridResponse,
+  options?: {
+    line_width?: number;
+    mode?: "dim" | "white";
+    dim_factor?: number;
+  }
+): Promise<GridMaskResponse> {
+  if (!grid.rectified_png_b64) {
+    throw new Error("Нет выпрямленного изображения");
+  }
+
+  const response = await fetch(
+    "/api/grid-mask",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        rectified_png_b64: grid.rectified_png_b64,
+        grid_size: grid.grid_size,
+        x_lines: grid.x_lines,
+        y_lines: grid.y_lines,
+        line_width: options?.line_width ?? 5,
+        mode: options?.mode ?? "dim",
+        dim_factor: options?.dim_factor ?? 0.35,
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      `Grid mask failed (${response.status}): ` +
+      await response.text()
+    );
+  }
+
+  return response.json() as Promise<GridMaskResponse>;
 }

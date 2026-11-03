@@ -470,13 +470,12 @@ class ExtractCellsRequest(BaseModel):
     y_lines: list[float]
 
 
-def _mnist_predict_cell(crop: "np.ndarray"):
+def _mnist_predict_cell(crop):
     """
     Прогоняет один кроп через MNIST.
     Возвращает (digit, confidence) или (None, None) для пустого кропа.
     """
     import numpy as np
-    import cv2
 
     if crop.size == 0:
         return None, None
@@ -486,9 +485,7 @@ def _mnist_predict_cell(crop: "np.ndarray"):
     if float(crop.mean()) >= 250.0 and float(crop.std()) < 2.0:
         return None, None
 
-    # Приводим к формату, который ожидает _mnist_digit:
-    # белая цифра на чёрном фоне.
-    # _mnist_digit ожидает маску, где цифра яркая.
+    # _mnist_digit ожидает маску, где цифра яркая на тёмном фоне.
     # Инвертируем: тёмные штрихи становятся белыми.
     inverted = 255 - crop
 
@@ -614,4 +611,109 @@ async def extract_cells_endpoint(req: ExtractCellsRequest):
     return {
         "grid_size": req.grid_size,
         "cells": cells,
+    }
+
+
+class GridMaskRequest(BaseModel):
+    rectified_png_b64: str
+    grid_size: int = 19
+    x_lines: list[float]
+    y_lines: list[float]
+    # Толщина полосы, ослабляющей линии сетки, в пикселях.
+    line_width: int = 5
+    # Режим: "dim" — уменьшить яркость, "white" — залить белым.
+    mode: str = "dim"
+    # Для режима dim: во сколько раз ослабить яркость (0..1).
+    dim_factor: float = 0.35
+
+
+@app.post("/api/grid-mask")
+async def grid_mask_endpoint(req: GridMaskRequest):
+    if req.grid_size not in (9, 13, 19):
+        raise HTTPException(422, "invalid grid size")
+
+    if (
+        len(req.x_lines) != req.grid_size
+        or len(req.y_lines) != req.grid_size
+    ):
+        raise HTTPException(422, "invalid grid lines")
+
+    if req.mode not in ("dim", "white"):
+        raise HTTPException(422, "invalid mode")
+
+    if req.line_width < 1 or req.line_width > 50:
+        raise HTTPException(422, "invalid line_width")
+
+    if not 0.0 <= req.dim_factor <= 1.0:
+        raise HTTPException(422, "invalid dim_factor")
+
+    if len(req.rectified_png_b64) > 60_000_000:
+        raise HTTPException(413, "image payload too large")
+
+    try:
+        raw = base64.b64decode(
+            req.rectified_png_b64,
+            validate=True,
+        )
+
+        with Image.open(io.BytesIO(raw)) as source:
+            if source.format != "PNG":
+                raise ValueError("expected PNG image")
+
+            if max(source.size) > 6000:
+                raise ValueError("image is too large")
+
+            image = source.convert("RGB")
+
+    except (ValueError, binascii.Error, OSError) as e:
+        raise HTTPException(400, f"invalid image: {e}")
+
+    import numpy as np
+    import cv2
+
+    rgb = np.asarray(image).copy()
+    h, w = rgb.shape[:2]
+
+    # Маска линий сетки: 255 там, где линия.
+    mask = np.zeros((h, w), dtype=np.uint8)
+
+    for x in req.x_lines:
+        xi = int(round(x))
+        if 0 <= xi < w:
+            cv2.line(
+                mask,
+                (xi, 0),
+                (xi, h - 1),
+                255,
+                req.line_width,
+            )
+
+    for y in req.y_lines:
+        yi = int(round(y))
+        if 0 <= yi < h:
+            cv2.line(
+                mask,
+                (0, yi),
+                (w - 1, yi),
+                255,
+                req.line_width,
+            )
+
+    if req.mode == "white":
+        rgb[mask > 0] = 255
+    else:
+        # Уменьшаем яркость только на пикселях линии.
+        # Остальные каналы не трогаем, чтобы не сдвигать оттенок.
+        dimmed = (rgb.astype(np.float32) * req.dim_factor).astype(np.uint8)
+        rgb[mask > 0] = dimmed[mask > 0]
+
+    out = Image.fromarray(rgb, mode="RGB")
+
+    return {
+        "width": w,
+        "height": h,
+        "masked_png_b64": _png_b64(out),
+        "mode": req.mode,
+        "line_width": req.line_width,
+        "dim_factor": req.dim_factor,
     }

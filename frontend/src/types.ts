@@ -21,7 +21,7 @@ export interface DebugImage {
   png_b64: string;
 }
 
-export interface ContourInfo {
+export interface DebugContour {
   area: number;
   perimeter: number;
   approx_points: number;
@@ -37,34 +37,26 @@ export interface DebugDetectResponse {
   height: number;
   corners: [number, number][];
   images: DebugImage[];
-  top_contours: ContourInfo[];
+  top_contours: DebugContour[];
 }
-
-export type GridPoint = [number, number];
 
 export interface GridResponse {
   found: boolean;
   note: string;
-
   grid_size: number;
-
   original_width: number;
   original_height: number;
-
   rectified_side: number;
   rectified_png_b64: string | null;
-
-  corners_original: GridPoint[];
-  grid_points_original: GridPoint[];
-
+  corners_original: [number, number][];
+  grid_points_original: [number, number][];
   x_lines: number[];
   y_lines: number[];
-
   x_quality: number;
   y_quality: number;
 }
 
-export interface RecognizedMove {
+export interface RecognitionCandidate {
   number: number;
   row: number;
   col: number;
@@ -72,55 +64,41 @@ export interface RecognizedMove {
 }
 
 export interface RecognitionResponse {
-  candidates: RecognizedMove[];
-
+  candidates: RecognitionCandidate[];
   inspected_cells: number;
   ocr_attempts: number;
-
-  exported_moves: RecognizedMove[];
-
+  exported_moves: RecognitionCandidate[];
   sgf: string | null;
-
   warnings: string[];
 }
 
-export interface OCRPrediction {
-  text: string;
-  confidence: number;
-}
-
-export interface OCRComparison {
+export interface OCRComparisonItem {
   row: number;
   col: number;
   ink_score: number;
-
   roi_png_b64: string;
-
-  tesseract: OCRPrediction;
-  paddle: OCRPrediction;
+  tesseract: { text: string; confidence: number };
+  paddle: { text: string; confidence: number };
 }
 
 export interface OCRComparisonResponse {
-  comparisons: OCRComparison[];
+  comparisons: OCRComparisonItem[];
   inspected_cells: number;
   ocr_attempts: number;
 }
 
-export interface DigitComparison {
+export interface DigitComparisonItem {
   row: number;
   col: number;
   ink_score: number;
-
   roi_png_b64: string;
   segmentation_png_b64: string;
   digit_png_b64: string[];
-
   mnist: {
     text: string | null;
     confidence_per_digit: number[];
     status: string;
   };
-
   crnn: {
     text: string;
     valid_number: boolean;
@@ -128,10 +106,9 @@ export interface DigitComparison {
 }
 
 export interface DigitComparisonResponse {
-  comparisons: DigitComparison[];
+  comparisons: DigitComparisonItem[];
   elapsed_ms: number;
 }
-
 
 export interface ExtractCellsResponse {
   grid_size: number;
@@ -144,4 +121,13 @@ export interface ExtractCellsResponse {
     mnist_digit: string | null;
     mnist_confidence: number | null;
   }[];
+}
+
+export interface GridMaskResponse {
+  width: number;
+  height: number;
+  masked_png_b64: string;
+  mode: string;
+  line_width: number;
+  dim_factor: number;
 }
