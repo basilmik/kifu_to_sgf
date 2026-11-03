@@ -415,9 +415,172 @@ class ExtractCellsRequest(BaseModel):
     y_lines: list[float]
 
 
+def _remove_circle_mark(crop):
+    """
+    Ищет контур кружка/овала, обводящего ход, и убирает его
+    из кропа (осветляет/затирает). Цифру внутри не трогает.
+
+    Возвращает (cleaned_crop, debug):
+        cleaned_crop — uint8 grayscale, тот же размер, что crop;
+        debug — dict с полями:
+            "circle_found": bool,
+            "circle_png_b64": base64 PNG маски кружка (белый контур на чёрном)
+            "circle_bbox": [x1, y1, x2, y2] или None
+            "circle_circularity": float
+            "note": str
+    """
+    import numpy as np
+    import cv2
+
+    if crop.size == 0:
+        return crop, {
+            "circle_found": False,
+            "circle_png_b64": "",
+            "circle_bbox": None,
+            "circle_circularity": 0.0,
+            "note": "empty",
+        }
+
+    h, w = crop.shape
+
+    # 1. Инверсия + бинаризация: штрихи белые на чёрном.
+    inverted = 255 - crop
+    _, binary = cv2.threshold(
+        inverted, 0, 255,
+        cv2.THRESH_BINARY | cv2.THRESH_OTSU,
+    )
+
+    # 2. Ищем контуры.
+    contours, _ = cv2.findContours(
+        binary, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    if not contours:
+        return crop, {
+            "circle_found": False,
+            "circle_png_b64": "",
+            "circle_bbox": None,
+            "circle_circularity": 0.0,
+            "note": "no_contours",
+        }
+
+    # 3. Ищем лучший кандидат в кружок.
+    # Кружок: большой bbox (не меньше 50% кропа), высокая
+    # circularity, низкое заполнение bbox (внутри пусто/цифра).
+    best = None
+    best_score = 0.0
+
+    crop_area = float(h * w)
+    min_bbox_side = 0.45 * min(h, w)
+
+    for c in contours:
+        area = float(cv2.contourArea(c))
+        if area <= 0:
+            continue
+
+        peri = float(cv2.arcLength(c, True))
+        if peri <= 0:
+            continue
+
+        x, y, bw, bh = cv2.boundingRect(c)
+
+        # Кружок должен быть крупным и почти квадратным в bbox.
+        if bw < min_bbox_side or bh < min_bbox_side:
+            continue
+
+        aspect = max(bw, bh) / max(1.0, min(bw, bh))
+        if aspect > 1.6:
+            continue
+
+        circularity = 4.0 * math.pi * area / (peri * peri)
+
+        # Заполнение bbox: у кружка контур тонкий, extent низкий.
+        bbox_area = float(bw * bh)
+        extent = area / bbox_area if bbox_area > 0 else 0.0
+
+        # Порог circularity для эллипса: >0.55. Для цифры: <0.3.
+        if circularity < 0.55:
+            continue
+
+        # Кружок занимает большую часть кропа.
+        if bbox_area < 0.35 * crop_area:
+            continue
+
+        # Контур тонкий — значит это обводка, а не заполненная фигура.
+        if extent > 0.6:
+            continue
+
+        score = circularity + (1.0 - extent) * 0.5
+        if score > best_score:
+            best_score = score
+            best = (c, area, peri, circularity, extent, (x, y, bw, bh))
+
+    if best is None:
+        return crop, {
+            "circle_found": False,
+            "circle_png_b64": "",
+            "circle_bbox": None,
+            "circle_circularity": 0.0,
+            "note": "no_circle_candidate",
+        }
+
+    c, area, peri, circularity, extent, bbox = best
+
+    # 4. Строим маску контура кружка с небольшой дилатацией,
+    # чтобы убрать антиалиасинг.
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.drawContours(mask, [c], -1, 255, thickness=1)
+
+    # Дилатация 1 px: только чтобы затронуть края штриха.
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.dilate(mask, kernel, iterations=1)
+
+    # 5. Проверяем, что маска не покрывает слишком много
+    # пикселей цифры. Цифра обычно внутри bbox и имеет
+    # не слишком большую площадь. Если маска покрывает
+    # больше 40% тёмных пикселей кропа — не рискуем.
+    dark = binary > 0
+    dark_total = int(np.count_nonzero(dark))
+    if dark_total == 0:
+        return crop, {
+            "circle_found": False,
+            "circle_png_b64": "",
+            "circle_bbox": None,
+            "circle_circularity": 0.0,
+            "note": "no_dark_pixels",
+        }
+
+    overlap = int(np.count_nonzero(mask & binary))
+    if overlap > 0.4 * dark_total:
+        return crop, {
+            "circle_found": False,
+            "circle_png_b64": "",
+            "circle_bbox": None,
+            "circle_circularity": 0.0,
+            "note": f"mask_too_large:{overlap}/{dark_total}",
+        }
+
+    # 6. Осветляем пиксели кружка: ставим 255 (белый фон).
+    cleaned = crop.copy()
+    cleaned[mask > 0] = 255
+
+    circle_b64 = _np_png_b64(mask)
+
+    return cleaned, {
+        "circle_found": True,
+        "circle_png_b64": circle_b64,
+        "circle_bbox": [
+            int(bbox[0]), int(bbox[1]),
+            int(bbox[0] + bbox[2]), int(bbox[1] + bbox[3]),
+        ],
+        "circle_circularity": float(round(circularity, 3)),
+        "note": "circle_removed",
+    }
+
+
 def _segment_digits(crop):
     """
-    Разбивает кроп 65x65 (или любого размера) на отдельные цифры
+    Разбивает кроп (65x65 или любой) на отдельные цифры
     по вертикальной проекции.
 
     Возвращает список (digit_mask, x_start, x_end),
@@ -432,22 +595,18 @@ def _segment_digits(crop):
 
     inverted = 255 - crop
 
-    # Бинаризация для анализа штрихов.
     _, binary = cv2.threshold(
         inverted, 0, 255,
         cv2.THRESH_BINARY | cv2.THRESH_OTSU,
     )
 
-    # Вертикальная проекция: сколько белых пикселей в каждом столбце.
     profile = (binary > 0).sum(axis=0).astype(np.float32)
 
     if profile.max() <= 0:
         return []
 
-    # Сглаживание, чтобы разрывы внутри одной цифры не резали её.
     profile = np.convolve(profile, [0.25, 0.5, 0.25], mode="same")
 
-    # Порог: столбцы с достаточным количеством штрихов.
     min_signal = max(1.0, profile.max() * 0.08)
     occupied = profile >= min_signal
 
@@ -461,7 +620,6 @@ def _segment_digits(crop):
     if not runs:
         return []
 
-    # Объединяем близкие группы (внутри одной цифры бывают разрывы).
     max_gap = max(2, int(round(binary.shape[1] * 0.04)))
 
     merged = []
@@ -476,7 +634,6 @@ def _segment_digits(crop):
         else:
             merged.append([a, b])
 
-    # Фильтруем слишком узкие/слабые группы.
     min_width = max(2, int(round(binary.shape[1] * 0.03)))
     max_profile = float(profile.max())
 
@@ -496,13 +653,10 @@ def _segment_digits(crop):
     digits = []
 
     for a, b in filtered:
-        # margin по краям, чтобы не отрезать штрихи цифры.
         margin = max(1, int(round((b - a) * 0.05)))
         left = max(0, a - margin)
         right = min(binary.shape[1], b + margin)
 
-        # Для MNIST нужна маска цифры (белая на чёрном),
-        # а не сырой grayscale. Используем inverted + bbox.
         fragment = inverted[:, left:right].copy()
 
         ys, xs = np.where(fragment > 32)
@@ -524,12 +678,10 @@ def _segment_digits(crop):
 
 def _mnist_predict_cell_with_debug(crop):
     """
-    Сегментирует кроп на отдельные цифры, прогоняет каждую через
-    MNIST и конкатенирует результаты.
+    Убирает кружок (если есть), сегментирует кроп на отдельные цифры,
+    прогоняет каждую через MNIST и конкатенирует результаты.
 
     Возвращает (digit_str, confidence_avg, debug).
-    digit_str — например "123" или None.
-    debug содержит base64 PNG промежуточных стадий.
     """
     import numpy as np
 
@@ -547,13 +699,22 @@ def _mnist_predict_cell_with_debug(crop):
             "tight_h": 0,
             "digit_pngs_b64": [],
             "digit_texts": [],
+            "circle_found": False,
+            "circle_png_b64": "",
+            "circle_bbox": None,
+            "circle_circularity": 0.0,
+            "circle_note": "",
             "note": "empty_crop",
         }
 
-    inverted = 255 - crop
+    # 1. Убираем кружок, если есть.
+    cleaned, circle_debug = _remove_circle_mark(crop)
+
+    inverted = 255 - cleaned
     inverted_b64 = _np_png_b64(inverted)
 
-    digits = _segment_digits(crop)
+    # 2. Сегментируем очищенный кроп.
+    digits = _segment_digits(cleaned)
 
     if not digits:
         return None, None, {
@@ -564,6 +725,11 @@ def _mnist_predict_cell_with_debug(crop):
             "tight_h": 0,
             "digit_pngs_b64": [],
             "digit_texts": [],
+            "circle_found": circle_debug["circle_found"],
+            "circle_png_b64": circle_debug["circle_png_b64"],
+            "circle_bbox": circle_debug["circle_bbox"],
+            "circle_circularity": circle_debug["circle_circularity"],
+            "circle_note": circle_debug["note"],
             "note": "no_digits",
         }
 
@@ -571,10 +737,6 @@ def _mnist_predict_cell_with_debug(crop):
     confidences = []
     digit_pngs = []
     digit_texts = []
-
-    # Для превью склеим все найденные цифры в одну полосу —
-    # это то, что было подано в модель по кускам.
-    first_shape = None
 
     for tight, _left, _right in digits:
         try:
@@ -587,9 +749,6 @@ def _mnist_predict_cell_with_debug(crop):
         digit_texts.append(char)
         digit_pngs.append(_np_png_b64(prepared))
 
-        if first_shape is None:
-            first_shape = prepared.shape
-
     if not recognized_text:
         return None, None, {
             "crop_png_b64": crop_b64,
@@ -599,31 +758,24 @@ def _mnist_predict_cell_with_debug(crop):
             "tight_h": 0,
             "digit_pngs_b64": [],
             "digit_texts": [],
+            "circle_found": circle_debug["circle_found"],
+            "circle_png_b64": circle_debug["circle_png_b64"],
+            "circle_bbox": circle_debug["circle_bbox"],
+            "circle_circularity": circle_debug["circle_circularity"],
+            "circle_note": circle_debug["note"],
             "note": "all_digits_failed",
         }
 
-    # Превью «что ушло в MNIST»: горизонтальная полоса из 28×28 входов.
-    if digit_pngs and first_shape is not None:
-        strip = np.zeros((28, 28 * len(digit_pngs)), dtype=np.uint8)
-        for i, _ in enumerate(digit_pngs):
-            # просто склеиваем куски; конкретные пиксели уже в digit_pngs
+    # Превью «что ушло в MNIST»: полоса из 28×28 входов.
+    strip = np.zeros((28, 28 * len(digits)), dtype=np.uint8)
+    for i, (tight, _l, _r) in enumerate(digits):
+        try:
+            _, _, prepared = _mnist_digit(tight)
+            strip[:, i * 28:(i + 1) * 28] = prepared
+        except Exception:
             pass
-        # аккуратно: читаем из base64 обратно нельзя, поэтому
-        # соберём из prepared на лету
-        strip = np.zeros((28, 28 * len(digits)), dtype=np.uint8)
-        for i, (tight, _l, _r) in enumerate(digits):
-            try:
-                _, _, prepared = _mnist_digit(tight)
-                strip[:, i * 28:(i + 1) * 28] = prepared
-            except Exception:
-                pass
-        strip_b64 = _np_png_b64(strip)
-        strip_w = int(strip.shape[1])
-        strip_h = int(strip.shape[0])
-    else:
-        strip_b64 = ""
-        strip_w = 0
-        strip_h = 0
+
+    strip_b64 = _np_png_b64(strip)
 
     avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
 
@@ -631,10 +783,15 @@ def _mnist_predict_cell_with_debug(crop):
         "crop_png_b64": crop_b64,
         "inverted_png_b64": inverted_b64,
         "tight_png_b64": strip_b64,
-        "tight_w": strip_w,
-        "tight_h": strip_h,
+        "tight_w": int(strip.shape[1]),
+        "tight_h": int(strip.shape[0]),
         "digit_pngs_b64": digit_pngs,
         "digit_texts": digit_texts,
+        "circle_found": circle_debug["circle_found"],
+        "circle_png_b64": circle_debug["circle_png_b64"],
+        "circle_bbox": circle_debug["circle_bbox"],
+        "circle_circularity": circle_debug["circle_circularity"],
+        "circle_note": circle_debug["note"],
         "note": "ok",
     }
 
@@ -719,6 +876,11 @@ async def extract_cells_endpoint(req: ExtractCellsRequest):
                         "tight_h": 0,
                         "digit_pngs_b64": [],
                         "digit_texts": [],
+                        "circle_found": False,
+                        "circle_png_b64": "",
+                        "circle_bbox": None,
+                        "circle_circularity": 0.0,
+                        "circle_note": "",
                         "note": "empty",
                     })
                     continue
@@ -750,6 +912,11 @@ async def extract_cells_endpoint(req: ExtractCellsRequest):
                         "tight_h": 0,
                         "digit_pngs_b64": [],
                         "digit_texts": [],
+                        "circle_found": False,
+                        "circle_png_b64": "",
+                        "circle_bbox": None,
+                        "circle_circularity": 0.0,
+                        "circle_note": "",
                         "note": "empty",
                     })
                 else:
