@@ -186,10 +186,13 @@ export async function compareDigitApproaches(
 }
 
 export async function extractGridCells(
-  grid: GridResponse
+  rectifiedPngB64: string,
+  gridSize: number,
+  xLines: number[],
+  yLines: number[],
 ): Promise<ExtractCellsResponse> {
-  if (!grid.rectified_png_b64) {
-    throw new Error("Нет выпрямленного изображения");
+  if (!rectifiedPngB64) {
+    throw new Error("Нет изображения для нарезки");
   }
 
   const response = await fetch(
@@ -200,10 +203,10 @@ export async function extractGridCells(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        rectified_png_b64: grid.rectified_png_b64,
-        grid_size: grid.grid_size,
-        x_lines: grid.x_lines,
-        y_lines: grid.y_lines,
+        rectified_png_b64: rectifiedPngB64,
+        grid_size: gridSize,
+        x_lines: xLines,
+        y_lines: yLines,
       }),
     }
   );

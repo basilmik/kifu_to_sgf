@@ -240,30 +240,13 @@ export default function App() {
     }
   }
 
-  async function onExtractCells() {
-    if (!gridResult?.found) return;
-
-    setCellsProcessing(true);
-    setCellsResult(null);
-    setError(null);
-
-    try {
-      const result = await extractGridCells(gridResult);
-      setCellsResult(result);
-    } catch (e) {
-      setError(
-        e instanceof Error ? e.message : String(e)
-      );
-    } finally {
-      setCellsProcessing(false);
-    }
-  }
-
   async function onMaskGrid() {
     if (!gridResult?.found) return;
 
     setMaskProcessing(true);
     setMaskResult(null);
+    // После пересчёта маски старые квадратики невалидны.
+    setCellsResult(null);
     setError(null);
 
     try {
@@ -279,6 +262,31 @@ export default function App() {
       );
     } finally {
       setMaskProcessing(false);
+    }
+  }
+
+  async function onExtractCells() {
+    if (!gridResult?.found || !maskResult) return;
+
+    setCellsProcessing(true);
+    setCellsResult(null);
+    setError(null);
+
+    try {
+      // Режем именно изображение после маски.
+      const result = await extractGridCells(
+        maskResult.masked_png_b64,
+        gridResult.grid_size,
+        gridResult.x_lines,
+        gridResult.y_lines,
+      );
+      setCellsResult(result);
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : String(e)
+      );
+    } finally {
+      setCellsProcessing(false);
     }
   }
 
@@ -589,7 +597,98 @@ export default function App() {
               >
                 {maskProcessing ? "Обрабатываем..." : "Применить маску"}
               </button>
+
+              <button
+                onClick={onExtractCells}
+                disabled={
+                  !maskResult ||
+                  cellsProcessing ||
+                  maskProcessing ||
+                  gridProcessing
+                }
+              >
+                {cellsProcessing
+                  ? "Вырезаем..."
+                  : "Вырезать квадратики"}
+              </button>
             </div>
+
+            {cellsResult && (
+              <div style={{ marginTop: 20 }}>
+                <h3>Вырезанные квадратики</h3>
+                <p>
+                  <b>Размер сетки:</b>{" "}
+                  {cellsResult.grid_size}×{cellsResult.grid_size}
+                  <br />
+                  <b>Вырезано:</b>{" "}
+                  {cellsResult.cells.length}
+                </p>
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: `repeat(${cellsResult.grid_size}, minmax(0, 1fr))`,
+                    gap: 2,
+                    maxWidth: 900,
+                    marginTop: 12,
+                  }}
+                >
+                  {cellsResult.cells.map((c) => (
+                    <figure
+                      key={`${c.row}-${c.col}`}
+                      style={{
+                        margin: 0,
+                        padding: 2,
+                        border: "1px solid #ccc",
+                        background: "#fafafa",
+                      }}
+                      title={`row=${c.row}, col=${c.col}`}
+                    >
+                      {c.png_b64 ? (
+                        <img
+                          src={b64ToDataUrl(c.png_b64)}
+                          alt={`cell ${c.row}-${c.col}`}
+                          style={{
+                            width: "100%",
+                            height: "auto",
+                            display: "block",
+                            imageRendering: "pixelated",
+                          }}
+                        />
+                      ) : (
+                        <div
+                          style={{
+                            width: "100%",
+                            aspectRatio: "1 / 1",
+                            background: "#eee",
+                          }}
+                        />
+                      )}
+                      <figcaption
+                        style={{
+                          fontSize: 10,
+                          textAlign: "center",
+                          color: "#666",
+                          lineHeight: 1.25,
+                        }}
+                      >
+                        <div>
+                          {c.row},{c.col}
+                        </div>
+                        <div>
+                          {c.height}×{c.width}px
+                        </div>
+                        <div>
+                          {c.mnist_digit !== null
+                            ? `${c.mnist_digit} (${c.mnist_confidence!.toFixed(2)})`
+                            : "—"}
+                        </div>
+                      </figcaption>
+                    </figure>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </section>
@@ -926,103 +1025,6 @@ export default function App() {
                   </table>
                 </div>
               </>
-            )}
-          </section>
-        )}
-
-        {gridResult?.found && gridResult.rectified_png_b64 && (
-          <section
-            style={{
-              marginTop: 24,
-              paddingTop: 16,
-              borderTop: "2px solid #ddd",
-            }}
-          >
-            <h2>Вырезанные квадратики</h2>
-
-            <button
-              onClick={onExtractCells}
-              disabled={cellsProcessing || gridProcessing}
-            >
-              {cellsProcessing
-                ? "Вырезаем..."
-                : "Вырезать квадратики"}
-            </button>
-
-            {cellsResult && (
-              <div style={{ marginTop: 20 }}>
-                <p>
-                  <b>Размер сетки:</b>{" "}
-                  {cellsResult.grid_size}×{cellsResult.grid_size}
-                  <br />
-                  <b>Вырезано:</b>{" "}
-                  {cellsResult.cells.length}
-                </p>
-
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: `repeat(${cellsResult.grid_size}, minmax(0, 1fr))`,
-                    gap: 2,
-                    maxWidth: 900,
-                    marginTop: 12,
-                  }}
-                >
-                  {cellsResult.cells.map((c) => (
-                    <figure
-                      key={`${c.row}-${c.col}`}
-                      style={{
-                        margin: 0,
-                        padding: 2,
-                        border: "1px solid #ccc",
-                        background: "#fafafa",
-                      }}
-                      title={`row=${c.row}, col=${c.col}`}
-                    >
-                      {c.png_b64 ? (
-                        <img
-                          src={b64ToDataUrl(c.png_b64)}
-                          alt={`cell ${c.row}-${c.col}`}
-                          style={{
-                            width: "100%",
-                            height: "auto",
-                            display: "block",
-                            imageRendering: "pixelated",
-                          }}
-                        />
-                      ) : (
-                        <div
-                          style={{
-                            width: "100%",
-                            aspectRatio: "1 / 1",
-                            background: "#eee",
-                          }}
-                        />
-                      )}
-                      <figcaption
-                        style={{
-                          fontSize: 10,
-                          textAlign: "center",
-                          color: "#666",
-                          lineHeight: 1.25,
-                        }}
-                      >
-                        <div>
-                          {c.row},{c.col}
-                        </div>
-                        <div>
-                          {c.height}×{c.width}px
-                        </div>
-                        <div>
-                          {c.mnist_digit !== null
-                            ? `${c.mnist_digit} (${c.mnist_confidence!.toFixed(2)})`
-                            : "—"}
-                        </div>
-                      </figcaption>
-                    </figure>
-                  ))}
-                </div>
-              </div>
             )}
           </section>
         )}
