@@ -739,6 +739,38 @@ def _segment_digits(crop):
         round(h * 0.12),
     )
 
+    def stroke_ends(component_id):
+        yy, xx = np.where(labels == component_id)
+
+        _, y, _, height, _ = map(
+            int,
+            stats[component_id],
+        )
+
+        # Берём небольшие участки сверху и снизу компоненты.
+        band = max(1, round(height * 0.20))
+
+        top = yy < y + band
+        bottom = yy >= y + height - band
+
+        return (
+            (
+                float(np.median(xx[top])),
+                float(np.median(yy[top])),
+            ),
+            (
+                float(np.median(xx[bottom])),
+                float(np.median(yy[bottom])),
+            ),
+        )
+
+
+    ends = {
+        component_id: stroke_ends(component_id)
+        for component_id in component_ids
+    }
+
+
     for index, a in enumerate(component_ids):
         ax, ay, aw, ah, _ = map(int, stats[a])
 
@@ -760,11 +792,56 @@ def _segment_digits(crop):
                 max(ay, by) - min(ay + ah, by + bh),
             )
 
-            if (
+            # Прежнее правило: части расположены одна над другой
+            # и достаточно перекрываются по X.
+            aligned_fragments = (
                 overlap_x >= 0.45 * min(aw, bw)
                 and overlap_y <= 0.20 * min(ah, bh)
                 and gap_y <= max_vertical_gap
+            )
+
+            # Дополнительное правило для разорванных
+            # вертикальных и наклонённых штрихов.
+            continued_stroke = False
+
+            if (
+                overlap_y == 0
+                and gap_y <= max_vertical_gap
+                and aw <= 0.85 * ah
+                and bw <= 0.85 * bh
             ):
+                upper, lower = (
+                    (a, b) if ay < by else (b, a)
+                )
+
+                upper_top, upper_bottom = ends[upper]
+                lower_top, lower_bottom = ends[lower]
+
+                upper_slope = (
+                    (upper_bottom[0] - upper_top[0])
+                    / max(1.0, upper_bottom[1] - upper_top[1])
+                )
+
+                lower_slope = (
+                    (lower_bottom[0] - lower_top[0])
+                    / max(1.0, lower_bottom[1] - lower_top[1])
+                )
+
+                # Продолжаем верхний штрих до высоты
+                # начала нижнего.
+                predicted_x = (
+                    upper_bottom[0]
+                    + upper_slope
+                    * (lower_top[1] - upper_bottom[1])
+                )
+
+                continued_stroke = (
+                    abs(upper_slope - lower_slope) <= 0.35
+                    and abs(predicted_x - lower_top[0])
+                    <= max(2.0, w * 0.04)
+                )
+
+            if aligned_fragments or continued_stroke:
                 parent[root(b)] = root(a)
 
     groups = {}
@@ -774,6 +851,71 @@ def _segment_digits(crop):
             root(component_id),
             [],
         ).append(component_id)
+
+    if len(groups) > 1:
+        boxes = {}
+
+        for group_id, group_ids in groups.items():
+            yy, xx = np.where(
+                np.isin(labels, group_ids)
+            )
+
+            boxes[group_id] = (
+                int(xx.min()),
+                int(yy.min()),
+                int(xx.max()) + 1,
+                int(yy.max()) + 1,
+                len(xx),
+            )
+
+        reference_h = max(
+            y2 - y1
+            for x1, y1, x2, y2, area in boxes.values()
+        )
+
+        reference_area = max(
+            box[4] for box in boxes.values()
+        )
+
+        tiny_groups = {
+            group_id
+            for group_id, (
+                x1, y1, x2, y2, area
+            ) in boxes.items()
+            if (
+                y2 - y1 <= 0.25 * reference_h
+                and area <= 0.15 * reference_area
+            )
+        }
+
+        for group_id in tiny_groups:
+            x1, y1, x2, y2, _ = boxes[group_id]
+
+            targets = []
+
+            for target_id, (
+                tx1, ty1, tx2, ty2, _
+            ) in boxes.items():
+
+                if target_id in tiny_groups:
+                    continue
+
+                # Маленький фрагмент целиком находится
+                # внутри прямоугольника большой группы.
+                if (
+                    tx1 <= x1
+                    and ty1 <= y1
+                    and x2 <= tx2
+                    and y2 <= ty2
+                ):
+                    targets.append(target_id)
+
+            # Объединяем только при единственном
+            # подходящем владельце.
+            if len(targets) == 1:
+                groups[targets[0]].extend(
+                    groups.pop(group_id)
+                )
 
     # 6. Изолируем пиксели каждой группы.
     digits = []
