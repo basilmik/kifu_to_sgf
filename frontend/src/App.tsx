@@ -215,13 +215,13 @@ export default function App() {
   }
 
   async function onExtractCells() {
-    if (!gridResult?.found || !maskResult) return;
+    if (!gridResult?.found || !gridResult.rectified_png_b64) return;
     setCellsProcessing(true);
     setCellsResult(null);
     setError(null);
     try {
       setCellsResult(await extractGridCells(
-        maskResult.masked_png_b64,
+        gridResult.rectified_png_b64,
         gridResult.grid_size,
         gridResult.x_lines,
         gridResult.y_lines,
@@ -383,7 +383,7 @@ export default function App() {
               <button onClick={onMaskGrid} disabled={maskProcessing || gridProcessing}>
                 {maskProcessing ? "Обрабатываем..." : "Применить маску"}
               </button>
-              <button onClick={onExtractCells} disabled={!maskResult || cellsProcessing || maskProcessing || gridProcessing}>
+              <button onClick={onExtractCells} disabled={cellsProcessing || maskProcessing || gridProcessing}>
                 {cellsProcessing ? "Вырезаем..." : "Вырезать квадратики"}
               </button>
             </div>

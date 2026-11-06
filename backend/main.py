@@ -525,100 +525,289 @@ def _detect_circle(crop):
     }
 
 
+# def _segment_digits(crop):
+#     """
+#     Разбивает кроп (65x65 или любой) на отдельные цифры
+#     по вертикальной проекции.
+
+#     Возвращает список (digit_mask, x_start, x_end).
+#     """
+#     import numpy as np
+#     import cv2
+
+#     if crop.size == 0:
+#         return []
+
+#     inverted = 255 - crop
+
+#     _, binary = cv2.threshold(
+#         inverted, 0, 255,
+#         cv2.THRESH_BINARY | cv2.THRESH_OTSU,
+#     )
+
+#     profile = (binary > 0).sum(axis=0).astype(np.float32)
+
+#     if profile.max() <= 0:
+#         return []
+
+#     profile = np.convolve(profile, [0.25, 0.5, 0.25], mode="same")
+
+#     min_signal = max(1.0, profile.max() * 0.08)
+#     occupied = profile >= min_signal
+
+#     padded = np.pad(occupied.astype(np.int8), (1, 1))
+#     transitions = np.diff(padded)
+#     starts = np.where(transitions == 1)[0]
+#     ends = np.where(transitions == -1)[0]
+
+#     runs = [(int(a), int(b)) for a, b in zip(starts, ends)]
+
+#     if not runs:
+#         return []
+
+#     max_gap = max(2, int(round(binary.shape[1] * 0.04)))
+
+#     merged = []
+#     for a, b in runs:
+#         if not merged:
+#             merged.append([a, b])
+#             continue
+#         previous = merged[-1]
+#         gap = a - previous[1]
+#         if gap <= max_gap:
+#             previous[1] = b
+#         else:
+#             merged.append([a, b])
+
+#     min_width = max(2, int(round(binary.shape[1] * 0.03)))
+#     max_profile = float(profile.max())
+
+#     filtered = []
+#     for a, b in merged:
+#         width = b - a
+#         strength = float(profile[a:b].sum())
+#         if width < min_width:
+#             continue
+#         if strength < max_profile * 0.15:
+#             continue
+#         filtered.append((a, b))
+
+#     if not filtered:
+#         return []
+
+#     digits = []
+
+#     for a, b in filtered:
+#         margin = max(1, int(round((b - a) * 0.05)))
+#         left = max(0, a - margin)
+#         right = min(binary.shape[1], b + margin)
+
+#         fragment = inverted[:, left:right].copy()
+
+#         ys, xs = np.where(fragment > 32)
+#         if len(xs) == 0:
+#             continue
+
+#         y1, y2 = max(0, ys.min() - 2), min(fragment.shape[0], ys.max() + 3)
+#         x1, x2 = max(0, xs.min() - 2), min(fragment.shape[1], xs.max() + 3)
+
+#         if x2 - x1 < 2 or y2 - y1 < 2:
+#             continue
+
+#         tight = fragment[y1:y2, x1:x2].copy()
+
+#         digits.append((tight, left, right))
+
+#     return digits
+
+
 def _segment_digits(crop):
     """
-    Разбивает кроп (65x65 или любой) на отдельные цифры
-    по вертикальной проекции.
+    Вход: grayscale ROI, тёмные цифры на светлом фоне.
 
-    Возвращает список (digit_mask, x_start, x_end).
+    Выход:
+        digits: [(digit_mask, x_start, x_end), ...]
+        status: строка для диагностики
+
+    digit_mask: светлые штрихи на чёрном фоне.
     """
-    import numpy as np
     import cv2
+    import numpy as np
 
     if crop.size == 0:
-        return []
+        return [], "empty_crop"
 
-    inverted = 255 - crop
+    # 1. Контраст относительно бумаги.
+    gray = crop.astype(np.float32)
+    paper = float(np.percentile(gray, 60))
 
-    _, binary = cv2.threshold(
-        inverted, 0, 255,
+    ink = np.clip(
+        paper - gray,
+        0,
+        255,
+    ).astype(np.uint8)
+
+    h, w = ink.shape
+
+    # 2. Оценка вертикального фона по верхнему
+    # и нижнему краям ROI.
+    edge_y = max(1, round(h * 0.18))
+    edge_x = max(1, round(w * 0.18))
+
+    top_bottom = np.concatenate(
+        (ink[:edge_y], ink[-edge_y:]),
+        axis=0,
+    )
+
+    vertical_background = np.median(
+        top_bottom,
+        axis=0,
+    )
+
+    ink = np.clip(
+        ink.astype(np.float32) - vertical_background,
+        0,
+        255,
+    )
+
+    # 3. Оценка горизонтального фона по левому
+    # и правому краям ROI.
+    left_right = np.concatenate(
+        (ink[:, :edge_x], ink[:, -edge_x:]),
+        axis=1,
+    )
+
+    horizontal_background = np.median(
+        left_right,
+        axis=1,
+    )
+
+    ink = np.clip(
+        ink - horizontal_background[:, None],
+        0,
+        255,
+    ).astype(np.uint8)
+
+    # 4. Маска для поиска компонентов.
+    otsu, _ = cv2.threshold(
+        ink,
+        0,
+        255,
         cv2.THRESH_BINARY | cv2.THRESH_OTSU,
     )
 
-    profile = (binary > 0).sum(axis=0).astype(np.float32)
+    binary = (
+        ink > max(10.0, otsu)
+    ).astype(np.uint8)
 
-    if profile.max() <= 0:
-        return []
+    count, labels, stats, _ = (
+        cv2.connectedComponentsWithStats(
+            binary,
+            connectivity=8,
+        )
+    )
 
-    profile = np.convolve(profile, [0.25, 0.5, 0.25], mode="same")
+    # Фильтруем по площади и наличию достаточно
+    # контрастного участка.
+    # Поэтому узкая единица может сохраниться.
+    min_area = max(
+        2,
+        round(crop.size * 0.0006),
+    )
 
-    min_signal = max(1.0, profile.max() * 0.08)
-    occupied = profile >= min_signal
+    component_ids = [
+        i
+        for i in range(1, count)
+        if stats[i, cv2.CC_STAT_AREA] >= min_area
+        and int(ink[labels == i].max()) >= 30
+    ]
 
-    padded = np.pad(occupied.astype(np.int8), (1, 1))
-    transitions = np.diff(padded)
-    starts = np.where(transitions == 1)[0]
-    ends = np.where(transitions == -1)[0]
+    if not component_ids:
+        return [], "blank_or_faint"
 
-    runs = [(int(a), int(b)) for a, b in zip(starts, ends)]
+    # 5. Объединение вертикально разорванных штрихов.
+    parent = {i: i for i in component_ids}
 
-    if not runs:
-        return []
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
 
-    max_gap = max(2, int(round(binary.shape[1] * 0.04)))
+    max_vertical_gap = max(
+        2,
+        round(h * 0.12),
+    )
 
-    merged = []
-    for a, b in runs:
-        if not merged:
-            merged.append([a, b])
-            continue
-        previous = merged[-1]
-        gap = a - previous[1]
-        if gap <= max_gap:
-            previous[1] = b
-        else:
-            merged.append([a, b])
+    for index, a in enumerate(component_ids):
+        ax, ay, aw, ah, _ = map(int, stats[a])
 
-    min_width = max(2, int(round(binary.shape[1] * 0.03)))
-    max_profile = float(profile.max())
+        for b in component_ids[index + 1:]:
+            bx, by, bw, bh, _ = map(int, stats[b])
 
-    filtered = []
-    for a, b in merged:
-        width = b - a
-        strength = float(profile[a:b].sum())
-        if width < min_width:
-            continue
-        if strength < max_profile * 0.15:
-            continue
-        filtered.append((a, b))
+            overlap_x = max(
+                0,
+                min(ax + aw, bx + bw) - max(ax, bx),
+            )
 
-    if not filtered:
-        return []
+            overlap_y = max(
+                0,
+                min(ay + ah, by + bh) - max(ay, by),
+            )
 
+            gap_y = max(
+                0,
+                max(ay, by) - min(ay + ah, by + bh),
+            )
+
+            if (
+                overlap_x >= 0.45 * min(aw, bw)
+                and overlap_y <= 0.20 * min(ah, bh)
+                and gap_y <= max_vertical_gap
+            ):
+                parent[root(b)] = root(a)
+
+    groups = {}
+
+    for component_id in component_ids:
+        groups.setdefault(
+            root(component_id),
+            [],
+        ).append(component_id)
+
+    # 6. Изолируем пиксели каждой группы.
     digits = []
 
-    for a, b in filtered:
-        margin = max(1, int(round((b - a) * 0.05)))
-        left = max(0, a - margin)
-        right = min(binary.shape[1], b + margin)
+    for group_ids in groups.values():
+        selected = np.isin(labels, group_ids)
 
-        fragment = inverted[:, left:right].copy()
+        yy, xx = np.where(selected)
 
-        ys, xs = np.where(fragment > 32)
-        if len(xs) == 0:
-            continue
+        x1 = int(xx.min())
+        x2 = int(xx.max()) + 1
+        y1 = int(yy.min())
+        y2 = int(yy.max()) + 1
 
-        y1, y2 = max(0, ys.min() - 2), min(fragment.shape[0], ys.max() + 3)
-        x1, x2 = max(0, xs.min() - 2), min(fragment.shape[1], xs.max() + 3)
-
-        if x2 - x1 < 2 or y2 - y1 < 2:
-            continue
+        fragment = np.where(
+            selected,
+            ink,
+            0,
+        ).astype(np.uint8)
 
         tight = fragment[y1:y2, x1:x2].copy()
 
-        digits.append((tight, left, right))
+        digits.append((tight, x1, x2))
 
-    return digits
+    # Для наклонённых цифр диапазоны X могут
+    # перекрываться. Сортируем по центрам.
+    digits.sort(
+        key=lambda item: (item[1] + item[2]) / 2,
+    )
+
+    if len(digits) > 3:
+        return [], f"uncertain_split:{len(digits)}"
+
+    return digits, "ok"
 
 
 def _mnist_predict_cell_with_debug(crop):
@@ -665,7 +854,7 @@ def _mnist_predict_cell_with_debug(crop):
     inverted = 255 - crop
     inverted_b64 = _np_png_b64(inverted)
 
-    digits = _segment_digits(crop)
+    digits, segmentation_note = _segment_digits(crop)
 
     if not digits:
         return None, None, {
@@ -677,7 +866,7 @@ def _mnist_predict_cell_with_debug(crop):
             "digit_pngs_b64": [],
             "digit_texts": [],
             **circle_debug,
-            "note": "no_digits",
+            "note": segmentation_note,
         }
 
     recognized_text = []
@@ -730,7 +919,7 @@ def _mnist_predict_cell_with_debug(crop):
         "digit_pngs_b64": digit_pngs,
         "digit_texts": digit_texts,
         **circle_debug,
-        "note": "ok",
+        "note": segmentation_note,
     }
 
 
