@@ -917,6 +917,105 @@ def _segment_digits(crop):
                     groups.pop(group_id)
                 )
 
+    # Присоединяем короткие соседние фрагменты:
+    # кончики, хвостики и другие отделившиеся части цифры.
+    if len(groups) > 1:
+        boxes = {}
+        masks = {}
+
+        for group_id, group_ids in groups.items():
+            mask = np.isin(labels, group_ids)
+            yy, xx = np.where(mask)
+
+            masks[group_id] = mask
+
+            boxes[group_id] = (
+                int(xx.min()),
+                int(yy.min()),
+                int(xx.max()) + 1,
+                int(yy.max()) + 1,
+                len(xx),
+            )
+
+        reference_h = max(
+            y2 - y1
+            for x1, y1, x2, y2, area in boxes.values()
+        )
+
+        reference_area = max(
+            box[4] for box in boxes.values()
+        )
+
+        # Короткие и небольшие группы считаем
+        # возможными отделившимися фрагментами.
+        small_groups = {
+            group_id
+            for group_id, (
+                x1, y1, x2, y2, area
+            ) in boxes.items()
+            if (
+                y2 - y1 <= 0.35 * reference_h
+                and area <= 0.40 * reference_area
+            )
+        }
+
+        large_groups = set(groups) - small_groups
+
+        # Для каждой основной группы строим карту
+        # расстояний до её реальных пикселей.
+        distance_maps = {
+            group_id: cv2.distanceTransform(
+                (~masks[group_id]).astype(np.uint8),
+                cv2.DIST_L2,
+                cv2.DIST_MASK_PRECISE,
+            )
+            for group_id in large_groups
+        }
+
+        for group_id in small_groups:
+            x1, y1, x2, y2, area = boxes[group_id]
+            small_h = y2 - y1
+
+            candidates = []
+
+            for target_id in large_groups:
+                (
+                    tx1, ty1, tx2, ty2, target_area
+                ) = boxes[target_id]
+
+                target_h = ty2 - ty1
+
+                # Фрагмент должен быть небольшим
+                # относительно именно этого соседа.
+                if (
+                    small_h > 0.35 * target_h
+                    or area > 0.40 * target_area
+                ):
+                    continue
+
+                gap = float(
+                    distance_maps[target_id][
+                        masks[group_id]
+                    ].min()
+                )
+
+                max_gap = max(
+                    2.0,
+                    0.10 * target_h,
+                )
+
+                if gap <= max_gap:
+                    candidates.append(target_id)
+
+            # При нескольких подходящих соседях
+            # сохраняем фрагмент отдельно.
+            if len(candidates) == 1:
+                target_id = candidates[0]
+
+                groups[target_id].extend(
+                    groups.pop(group_id)
+                )
+
     # 6. Изолируем пиксели каждой группы.
     digits = []
 
