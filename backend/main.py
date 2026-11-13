@@ -1267,7 +1267,7 @@ def _mnist_predict_cell_with_debug(crop, is_hoshi=False):
     inverted = 255 - crop
     inverted_b64 = _np_png_b64(inverted)
 
-    digits, segmentation_note = _segment_digits(crop)
+    digits, segmentation_note = _segment_digits(crop, is_hoshi)
 
     if not digits:
         return None, None, {
