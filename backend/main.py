@@ -735,7 +735,6 @@ def _has_handwriting(crop,  is_hoshi=False):
     if not valid_ids:
         return False
 
-    # Проверяем именно пустое пересечение с точкой хоси.
     if is_hoshi:
         selected = np.isin(labels, valid_ids)
         yy, xx = np.where(selected)
@@ -750,13 +749,11 @@ def _has_handwriting(crop,  is_hoshi=False):
 
         roi_size = min(h, w)
 
-        # Для ROI 65×65 — максимум около 10×10 пикселей.
         max_dot_size = max(
             4,
             round(roi_size * 0.16),
         )
 
-        # Допускаем небольшое смещение относительно центра.
         center_tolerance = max(
             2,
             round(roi_size * 0.06),
