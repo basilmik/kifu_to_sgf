@@ -147,8 +147,99 @@ def _prepare_mnist_input(mask: np.ndarray) -> np.ndarray:
 
     return img
 
+def _has_middle_crossbar(image):
+    """
+    Ищет поперечный штрих в средней части цифры.
+    Вход: подготовленное изображение MNIST,
+    светлая цифра на чёрном фоне.
+    """
+    import numpy as np
 
-def _mnist_digit(mask: np.ndarray):
+    binary = image > 64
+
+    yy, xx = np.where(binary)
+
+    if len(xx) == 0:
+        return False
+
+    binary = binary[
+        yy.min():yy.max() + 1,
+        xx.min():xx.max() + 1,
+    ]
+
+    h, w = binary.shape
+
+    if h < 8 or w < 4:
+        return False
+
+    # По нижней части оцениваем направление
+    # основного вертикального/наклонённого штриха.
+    stem_y = []
+    stem_x = []
+
+    for y in range(round(h * 0.68), h):
+        row_x = np.flatnonzero(binary[y])
+
+        if row_x.size:
+            stem_y.append(y)
+            stem_x.append(
+                float(np.median(row_x))
+            )
+
+    if len(stem_y) < 3:
+        return False
+
+    slope, intercept = np.polyfit(
+        stem_y,
+        stem_x,
+        1,
+    )
+
+    min_arm = max(2.0, w * 0.18)
+    votes = 0
+
+    for y in range(
+        round(h * 0.40),
+        round(h * 0.78),
+    ):
+        # Узкая полоса допускает небольшой
+        # наклон поперечной черты.
+        row = np.any(
+            binary[
+                max(0, y - 1):min(h, y + 2)
+            ],
+            axis=0,
+        )
+
+        changes = np.diff(
+            np.r_[False, row, False].astype(np.int8)
+        )
+
+        starts = np.flatnonzero(changes == 1)
+        ends = np.flatnonzero(changes == -1)
+
+        predicted_stem_x = slope * y + intercept
+
+        for left, right in zip(starts, ends):
+            if right - left < max(5.0, w * 0.55):
+                continue
+
+            left_arm = predicted_stem_x - left
+            right_arm = right - 1 - predicted_stem_x
+
+            if (
+                left_arm >= min_arm
+                and right_arm >= min_arm
+            ):
+                votes += 1
+                break
+
+        if votes >= 2:
+            return True
+
+    return False
+
+def _mnist_digit(mask: np.ndarray, crossed_sevens: bool = True):
     """
     mask: uint8, цифра яркая на тёмном фоне.
 
@@ -181,6 +272,12 @@ def _mnist_digit(mask: np.ndarray):
     probs /= probs.sum()
 
     digit = int(probs.argmax())
+    if (
+        crossed_sevens
+        and digit == 7
+        and not _has_middle_crossbar(prepared)
+    ):
+        digit = 1
 
     return (
         str(digit),
