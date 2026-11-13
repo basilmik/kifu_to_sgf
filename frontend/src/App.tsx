@@ -416,6 +416,16 @@ export default function App() {
               <button onClick={onExtractCells} disabled={cellsProcessing || maskProcessing || gridProcessing}>
                 {cellsProcessing ? "Вырезаем..." : "Вырезать квадратики"}
               </button>
+              <button
+                type="button"
+                onClick={onDownloadCellsSGF}
+                disabled={cellsProcessing || !cellsResult?.sgf}
+              >
+                Скачать SGF
+                {cellsResult?.sgf
+                  ? ` (${cellsResult.sgf_moves_count} ходов)`
+                  : ""}
+              </button>
             </div>
 
             {cellsResult && (
