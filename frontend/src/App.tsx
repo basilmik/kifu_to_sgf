@@ -154,6 +154,36 @@ export default function App() {
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  function onDownloadCellsSGF() {
+    const result = cellsResult;
+
+    if (!result?.sgf) return;
+
+    const blob = new Blob(
+      [result.sgf],
+      {
+        type: "application/x-go-sgf;charset=utf-8",
+      },
+    );
+
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download =
+      `kifu-${result.sgf_moves_count}-moves.sgf`;
+
+    document.body.appendChild(link);
+
+    link.click();
+    link.remove();
+
+    window.setTimeout(() => {
+      URL.revokeObjectURL(url);
+    }, 1000);
+  }
+
   async function onCompareOCR() {
     if (!gridResult?.found) return;
     setComparing(true);
@@ -395,7 +425,26 @@ export default function App() {
                   <b>Размер сетки:</b> {cellsResult.grid_size}×{cellsResult.grid_size}<br />
                   <b>Вырезано:</b> {cellsResult.cells.length}
                 </p>
+                <div style={{ marginBottom: 12 }}>
+                  <button
+                    onClick={onDownloadCellsSGF}
+                    disabled={!cellsResult.sgf || cellsProcessing}
+                  >
+                    Скачать SGF ({cellsResult.sgf_moves_count} ходов)
+                  </button>
 
+                  {(cellsResult.sgf_warnings ?? []).length > 0 && (
+                    <ul style={{ color: "#a33" }}>
+                      {cellsResult.sgf_warnings.map(
+                        (warning, index) => (
+                          <li key={index}>
+                            {warning}
+                          </li>
+                        ),
+                      )}
+                    </ul>
+                  )}
+                </div>
                 <div
                   style={{
                     display: "grid",

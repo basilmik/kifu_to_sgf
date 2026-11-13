@@ -1335,6 +1335,178 @@ def _mnist_predict_cell_with_debug(crop, is_hoshi=False):
         "note": segmentation_note,
     }
 
+def _build_sgf_from_cells(
+    cells,
+    grid_size,
+    max_move=500,
+):
+    import re
+
+    if grid_size not in (9, 13, 19):
+        raise ValueError("Unsupported grid size")
+
+    if (
+        not isinstance(max_move, int)
+        or not 1 <= max_move <= 2000
+    ):
+        raise ValueError("max_move must be in 1..2000")
+
+    warnings = []
+    by_number = {}
+
+    def result(sgf=None, count=0):
+        return {
+            "sgf": sgf,
+            "sgf_warnings": warnings,
+            "sgf_moves_count": count,
+        }
+
+    for cell in cells:
+        raw = cell.get("mnist_digit")
+
+        if raw is None:
+            continue
+
+        text = str(raw).strip()
+
+        if not text:
+            continue
+
+        row = cell.get("row")
+        col = cell.get("col")
+
+        if (
+            not isinstance(row, int)
+            or not isinstance(col, int)
+            or isinstance(row, bool)
+            or isinstance(col, bool)
+            or not 0 <= row < grid_size
+            or not 0 <= col < grid_size
+        ):
+            warnings.append(
+                "Пропущены некорректные координаты: "
+                f"row={row}, col={col}."
+            )
+            continue
+
+        # Допускаем целые номера без ведущих нулей.
+        if re.fullmatch(
+            r"[1-9][0-9]{0,3}",
+            text,
+        ) is None:
+            warnings.append(
+                f"row={row}, col={col}: "
+                f"некорректный номер {text!r}."
+            )
+            continue
+
+        number = int(text)
+
+        if number > max_move:
+            warnings.append(
+                f"row={row}, col={col}: "
+                f"номер {number} превышает {max_move}."
+            )
+            continue
+
+        by_number.setdefault(
+            number,
+            [],
+        ).append((row, col))
+
+    if not by_number:
+        warnings.append(
+            "Не найдено допустимых номеров ходов."
+        )
+        return result()
+
+    # Собираем непрерывную последовательность.
+    sequence = []
+
+    for number in range(
+        1,
+        max(by_number) + 1,
+    ):
+        matches = by_number.get(number, [])
+
+        if not matches:
+            warnings.append(
+                f"Не найден ход {number}. "
+                "Экспорт остановлен перед ним."
+            )
+            break
+
+        if len(matches) != 1:
+            places = ", ".join(
+                f"({row}, {col})"
+                for row, col in matches
+            )
+
+            warnings.append(
+                f"Номер {number} повторяется "
+                f"в ячейках {places}. "
+                "Экспорт остановлен перед ним."
+            )
+            break
+
+        row, col = matches[0]
+
+        sequence.append(
+            (number, row, col)
+        )
+
+    # Без однозначного первого хода файл не создаём.
+    if not sequence:
+        return result()
+
+    if len(sequence) < max(by_number):
+        warnings.append(
+            "В файл включены только ходы "
+            f"1–{len(sequence)}."
+        )
+
+    def escape(value):
+        return (
+            str(value)
+            .replace("\\", "\\\\")
+            .replace("]", "\\]")
+        )
+
+    comment = (
+        "Автоматически распознанная кифа. "
+        f"Экспортировано ходов: {len(sequence)}."
+    )
+
+    if warnings:
+        comment += "\n" + "\n".join(warnings)
+
+    parts = [
+        f"(;FF[4]GM[1]CA[UTF-8]"
+        f"AP[KifuToSGF:0.1]"
+        f"SZ[{grid_size}]"
+        f"C[{escape(comment)}]"
+    ]
+
+    for number, row, col in sequence:
+        color = "B" if number % 2 else "W"
+
+        # SGF: сначала столбец, затем строка.
+        # Отсчёт от верхнего левого угла.
+        point = (
+            chr(ord("a") + col)
+            + chr(ord("a") + row)
+        )
+
+        parts.append(
+            f";{color}[{point}]"
+        )
+
+    parts.append(")")
+
+    return result(
+        "\n".join(parts) + "\n",
+        len(sequence),
+    )
 
 @app.post("/api/extract-cells")
 async def extract_cells_endpoint(req: ExtractCellsRequest):
@@ -1477,10 +1649,16 @@ async def extract_cells_endpoint(req: ExtractCellsRequest):
         return out
 
     cells = await run_in_threadpool(_build_cells)
+    sgf_result = _build_sgf_from_cells(
+        cells,
+        req.grid_size,
+        max_move=500,
+    )
 
     return {
         "grid_size": req.grid_size,
         "cells": cells,
+        **sgf_result,
     }
 
 

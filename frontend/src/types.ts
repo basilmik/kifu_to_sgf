@@ -136,6 +136,10 @@ export interface ExtractCellsResponse {
     circle_circularity: number;
     circle_note: string;
 
+    sgf: string | null;
+    sgf_warnings: string[];
+    sgf_moves_count: number;
+
     note: string;
   }[];
 }
