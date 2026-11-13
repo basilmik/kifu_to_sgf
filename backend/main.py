@@ -620,6 +620,119 @@ def _detect_circle(crop):
 
 #     return digits
 
+def _has_handwriting(crop):
+    """
+    Проверка наличия заметных штрихов после подавления сетки.
+    Используется только для отсеивания пустых ROI.
+    """
+    import cv2
+    import numpy as np
+
+    if crop.size == 0:
+        return False
+
+    gray = crop.astype(np.float32)
+    paper = float(np.percentile(gray, 60))
+
+    ink = np.clip(
+        paper - gray,
+        0,
+        255,
+    )
+
+    h, w = ink.shape
+    edge_y = max(1, round(h * 0.18))
+    edge_x = max(1, round(w * 0.18))
+
+    # Оцениваем стороны отдельно.
+    top = np.median(ink[:edge_y], axis=0)
+    bottom = np.median(ink[-edge_y:], axis=0)
+
+    # Если линия есть только с одной стороны,
+    # берём её полный контраст.
+    vertical = np.maximum(
+        top,
+        bottom,
+    ).astype(np.float32)
+
+    # Допуск в один пиксель на смещение линии.
+    vertical = cv2.dilate(
+        vertical[None, :],
+        np.ones((1, 3), dtype=np.uint8),
+    )[0]
+
+    probe = np.clip(
+        ink - vertical[None, :],
+        0,
+        255,
+    )
+
+    left = np.median(probe[:, :edge_x], axis=1)
+    right = np.median(probe[:, -edge_x:], axis=1)
+
+    horizontal = np.maximum(
+        left,
+        right,
+    ).astype(np.float32)
+
+    horizontal = cv2.dilate(
+        horizontal[:, None],
+        np.ones((3, 1), dtype=np.uint8),
+    )[:, 0]
+
+    probe = np.clip(
+        probe - horizontal[:, None],
+        0,
+        255,
+    ).astype(np.uint8)
+
+    otsu, _ = cv2.threshold(
+        probe,
+        0,
+        255,
+        cv2.THRESH_BINARY | cv2.THRESH_OTSU,
+    )
+
+    binary = (
+        probe > max(10.0, otsu)
+    ).astype(np.uint8)
+
+    count, labels, stats, _ = (
+        cv2.connectedComponentsWithStats(
+            binary,
+            connectivity=8,
+        )
+    )
+
+    min_area = max(
+        3,
+        round(crop.size * 0.0006),
+    )
+
+    for component_id in range(1, count):
+        if (
+            stats[component_id, cv2.CC_STAT_AREA]
+            < min_area
+        ):
+            continue
+
+        # Одиночная почти горизонтальная полоска
+        # высотой 1–2 пикселя не подтверждает наличие цифры.
+        if (
+            stats[component_id, cv2.CC_STAT_HEIGHT]
+            < 3
+        ):
+            continue
+
+        peak = int(
+            probe[labels == component_id].max()
+        )
+
+        if peak >= 30:
+            return True
+
+    return False
+
 
 def _segment_digits(crop):
     """
@@ -637,6 +750,8 @@ def _segment_digits(crop):
     if crop.size == 0:
         return [], "empty_crop"
 
+    if not _has_handwriting(crop):
+        return [], "blank_or_grid"
     # 1. Контраст относительно бумаги.
     gray = crop.astype(np.float32)
     paper = float(np.percentile(gray, 60))
