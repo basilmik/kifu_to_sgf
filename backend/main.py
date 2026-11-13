@@ -1223,7 +1223,7 @@ def _segment_digits(crop,  is_hoshi=False):
     return digits, "ok"
 
 
-def _mnist_predict_cell_with_debug(crop):
+def _mnist_predict_cell_with_debug(crop, is_hoshi=False):
     """
     Ищет кружок (только для отображения, НЕ удаляет его),
     сегментирует исходный кроп на отдельные цифры,
