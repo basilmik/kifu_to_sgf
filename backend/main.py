@@ -620,7 +620,7 @@ def _detect_circle(crop):
 
 #     return digits
 
-def _has_handwriting(crop):
+def _has_handwriting(crop,  is_hoshi=False):
     """
     Проверка наличия заметных штрихов после подавления сетки.
     Используется только для отсеивания пустых ROI.
@@ -709,6 +709,9 @@ def _has_handwriting(crop):
         round(crop.size * 0.0006),
     )
 
+    # Собираем все значимые компоненты.
+    valid_ids = []
+
     for component_id in range(1, count):
         if (
             stats[component_id, cv2.CC_STAT_AREA]
@@ -716,8 +719,6 @@ def _has_handwriting(crop):
         ):
             continue
 
-        # Одиночная почти горизонтальная полоска
-        # высотой 1–2 пикселя не подтверждает наличие цифры.
         if (
             stats[component_id, cv2.CC_STAT_HEIGHT]
             < 3
@@ -729,12 +730,65 @@ def _has_handwriting(crop):
         )
 
         if peak >= 30:
-            return True
+            valid_ids.append(component_id)
 
-    return False
+    if not valid_ids:
+        return False
+
+    # Проверяем именно пустое пересечение с точкой хоси.
+    if is_hoshi:
+        selected = np.isin(labels, valid_ids)
+        yy, xx = np.where(selected)
+
+        x1 = int(xx.min())
+        x2 = int(xx.max())
+        y1 = int(yy.min())
+        y2 = int(yy.max())
+
+        mark_w = x2 - x1 + 1
+        mark_h = y2 - y1 + 1
+
+        roi_size = min(h, w)
+
+        # Для ROI 65×65 — максимум около 10×10 пикселей.
+        max_dot_size = max(
+            4,
+            round(roi_size * 0.16),
+        )
+
+        # Допускаем небольшое смещение относительно центра.
+        center_tolerance = max(
+            2,
+            round(roi_size * 0.06),
+        )
+
+        mark_cx = (x1 + x2) / 2.0
+        mark_cy = (y1 + y2) / 2.0
+
+        roi_cx = (w - 1) / 2.0
+        roi_cy = (h - 1) / 2.0
+
+        small = (
+            mark_w <= max_dot_size
+            and mark_h <= max_dot_size
+        )
+
+        compact = (
+            0.5 <= mark_w / max(1, mark_h) <= 2.0
+        )
+
+        centered = (
+            abs(mark_cx - roi_cx) <= center_tolerance
+            and abs(mark_cy - roi_cy) <= center_tolerance
+        )
+
+        if small and compact and centered:
+            return False
+
+    return True
 
 
-def _segment_digits(crop):
+def _segment_digits(crop,  is_hoshi=False):
     """
     Вход: grayscale ROI, тёмные цифры на светлом фоне.
 
@@ -750,7 +804,10 @@ def _segment_digits(crop):
     if crop.size == 0:
         return [], "empty_crop"
 
-    if not _has_handwriting(crop):
+    if not _has_handwriting(
+        crop,
+        is_hoshi=is_hoshi,
+    ):
         return [], "blank_or_grid"
     # 1. Контраст относительно бумаги.
     gray = crop.astype(np.float32)
@@ -1372,7 +1429,18 @@ async def extract_cells_endpoint(req: ExtractCellsRequest):
                 if not ok:
                     raise HTTPException(500, "cannot encode cell")
 
-                digit_str, conf, debug = _mnist_predict_cell_with_debug(crop)
+                is_hoshi = (
+                    req.grid_size == 19
+                    and row in (3, 9, 15)
+                    and col in (3, 9, 15)
+                )
+
+                digit_str, conf, debug = (
+                    _mnist_predict_cell_with_debug(
+                        crop,
+                        is_hoshi=is_hoshi,
+                    )
+                )
 
                 item = {
                     "row": row,
